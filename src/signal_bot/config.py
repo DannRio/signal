@@ -76,7 +76,7 @@ class RegimeBotConfig:
     minimum_bars: int = 220
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "RegimeBotConfig":
+    def from_dict(cls, payload: dict[str, Any]) -> RegimeBotConfig:
         unknown = set(payload).difference(
             {"indicators", "signals", "risk", "minimum_bars"}
         )
@@ -97,7 +97,7 @@ class RegimeBotConfig:
         return config
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "RegimeBotConfig":
+    def from_json(cls, path: str | Path) -> RegimeBotConfig:
         with Path(path).open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if not isinstance(payload, dict):

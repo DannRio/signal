@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
-from typing import Callable, Iterable, Protocol
+from datetime import UTC, datetime
+from typing import Protocol
 
 import pandas as pd
 
@@ -144,7 +145,7 @@ class RegimeBotService:
         self.engine = engine or RegimeSignalEngine()
         self.client_factory = client_factory
         self.now_factory = now_factory or (
-            lambda: pd.Timestamp(datetime.now(timezone.utc))
+            lambda: pd.Timestamp(datetime.now(UTC))
         )
 
     def fetch_frames(

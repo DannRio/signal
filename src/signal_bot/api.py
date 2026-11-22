@@ -17,7 +17,7 @@ from .service import (
 
 def create_app(config: RegimeBotConfig | None = None):
     try:
-        from fastapi import Body, FastAPI, HTTPException, Query
+        from fastapi import FastAPI, HTTPException, Query
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             'Install the web extra: pip install -e ".[web]"'
@@ -102,7 +102,7 @@ def create_app(config: RegimeBotConfig | None = None):
 
     @app.post("/v1/analyze")
     def analyze(
-        payload: dict[str, Any] = Body(...),
+        payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
             symbol = str(payload["symbol"])

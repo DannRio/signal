@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -95,9 +95,9 @@ def _position() -> _Position:
     return _Position(
         side=PositionSide.LONG,
         setup_type=SetupType.BREAKOUT,
-        signal_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        signal_time=datetime(2025, 1, 1, tzinfo=UTC),
         entry_time=datetime(
-            2025, 1, 1, 0, 15, tzinfo=timezone.utc
+            2025, 1, 1, 0, 15, tzinfo=UTC
         ),
         entry_price=100.0,
         initial_stop=99.0,
@@ -132,7 +132,7 @@ def test_ambiguous_bar_uses_stop_first_assumption() -> None:
         position=position,
         row=row,
         timestamp=datetime(
-            2025, 1, 1, 0, 30, tzinfo=timezone.utc
+            2025, 1, 1, 0, 30, tzinfo=UTC
         ),
         equity=10_000.0,
         fee_rate=0.001,
@@ -160,7 +160,7 @@ def test_gap_through_stop_uses_adverse_open_fill() -> None:
         position=position,
         row=row,
         timestamp=datetime(
-            2025, 1, 1, 0, 30, tzinfo=timezone.utc
+            2025, 1, 1, 0, 30, tzinfo=UTC
         ),
         equity=10_000.0,
         fee_rate=0.001,

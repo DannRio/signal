@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from hashlib import sha256
 from typing import Any
 
 
-class MarketRegime(str, Enum):
+class MarketRegime(StrEnum):
     STRONG_BULLISH = "strong_bullish"
     BULLISH = "bullish"
     RANGE = "range"
@@ -16,7 +16,7 @@ class MarketRegime(str, Enum):
     STRONG_BEARISH = "strong_bearish"
 
 
-class SignalAction(str, Enum):
+class SignalAction(StrEnum):
     LONG = "long"
     SHORT = "short"
     WATCH_LONG = "watch_long"
@@ -24,13 +24,13 @@ class SignalAction(str, Enum):
     NO_TRADE = "no_trade"
 
 
-class SetupType(str, Enum):
+class SetupType(StrEnum):
     BREAKOUT = "breakout"
     PULLBACK = "pullback"
     NONE = "none"
 
 
-class PositionSide(str, Enum):
+class PositionSide(StrEnum):
     LONG = "long"
     SHORT = "short"
 
@@ -123,7 +123,7 @@ class MarketSignal:
         timeframe_states: tuple[TimeframeState, ...],
         reasons: tuple[str, ...],
         warnings: tuple[str, ...],
-    ) -> "MarketSignal":
+    ) -> MarketSignal:
         raw = "|".join(
             [
                 symbol,

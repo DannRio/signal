@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Mapping
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -26,7 +26,6 @@ from .validation import (
     prepare_ohlcv,
     timeframe_to_timedelta,
 )
-
 
 _REQUIRED_FEATURES = {
     "timestamp",
@@ -123,7 +122,7 @@ class RegimeSignalEngine:
                     return self._safe_no_trade(
                         symbol=symbol,
                         execution_timeframe=execution,
-                        generated_at=datetime.now(timezone.utc),
+                        generated_at=datetime.now(UTC),
                         warnings=(
                             f"Execution timeframe rejected: {exc}",
                         ),
@@ -167,7 +166,7 @@ class RegimeSignalEngine:
                 execution_timeframe=execution,
                 generated_at=(
                     execution_candle_time
-                    or datetime.now(timezone.utc)
+                    or datetime.now(UTC)
                 ),
                 warnings=tuple(
                     warnings
@@ -183,7 +182,7 @@ class RegimeSignalEngine:
             return self._safe_no_trade(
                 symbol=symbol,
                 execution_timeframe=execution,
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 warnings=tuple(
                     warnings + ["No usable execution timeframe data."]
                 ),
@@ -269,7 +268,7 @@ class RegimeSignalEngine:
                     "timestamp"
                 ].to_pydatetime()
             else:
-                generated_at = datetime.now(timezone.utc)
+                generated_at = datetime.now(UTC)
             return self._safe_no_trade(
                 symbol=symbol,
                 execution_timeframe=execution,
@@ -288,7 +287,7 @@ class RegimeSignalEngine:
             return self._safe_no_trade(
                 symbol=symbol,
                 execution_timeframe=execution,
-                generated_at=datetime.now(timezone.utc),
+                generated_at=datetime.now(UTC),
                 warnings=tuple(
                     warnings + ["Execution features are unavailable."]
                 ),
@@ -818,7 +817,7 @@ class RegimeSignalEngine:
         raw /= raw.sum()
         return {
             timeframe: float(weight)
-            for timeframe, weight in zip(timeframes, raw)
+            for timeframe, weight in zip(timeframes, raw, strict=False)
         }
 
     @staticmethod
@@ -1182,7 +1181,7 @@ class RegimeSignalEngine:
         warnings: tuple[str, ...],
     ) -> MarketSignal:
         if generated_at.tzinfo is None:
-            generated_at = generated_at.replace(tzinfo=timezone.utc)
+            generated_at = generated_at.replace(tzinfo=UTC)
         return MarketSignal.create(
             symbol=symbol,
             generated_at=generated_at,

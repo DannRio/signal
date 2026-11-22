@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
-
 
 REQUIRED_COLUMNS = (
     "timestamp",
@@ -134,7 +133,7 @@ def drop_incomplete_candle(
     if data.empty:
         return data.copy()
     frame = prepare_ohlcv(data)
-    current_time = pd.Timestamp(now or datetime.now(timezone.utc))
+    current_time = pd.Timestamp(now or datetime.now(UTC))
     if current_time.tzinfo is None:
         current_time = current_time.tz_localize("UTC")
     else:

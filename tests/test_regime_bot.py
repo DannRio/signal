@@ -8,8 +8,8 @@ from signal_bot import (
     MarketRegime,
     RegimeBotConfig,
     RegimeSignalEngine,
-    SignalAction,
     SetupType,
+    SignalAction,
     to_dict,
 )
 from signal_bot.validation import drop_incomplete_candle

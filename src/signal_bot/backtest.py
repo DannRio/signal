@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-import math
-from typing import Mapping
 
 import numpy as np
 import pandas as pd
