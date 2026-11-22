@@ -27,7 +27,13 @@ jobs:
           tar -xzf /tmp/signal-project.tar.gz -C /tmp/signal-project
           test -f /tmp/signal-project/signal/pyproject.toml
           test -f /tmp/signal-project/signal/src/signal_bot/engine.py
-          rsync -a --delete --exclude='.git/' /tmp/signal-project/signal/ ./
+          # GitHub's workflow token may write repository contents but may not
+          # create or replace workflow files. Preserve this workflow here; the
+          # connector installs the permanent CI workflow after source import.
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/' \
+            /tmp/signal-project/signal/ ./
 
       - name: Commit standalone project
         shell: bash
