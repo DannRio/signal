@@ -1,0 +1,41 @@
+name: Bootstrap standalone signal project
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".bootstrap/**"
+      - ".github/workflows/bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify and expand project payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/payload.* > /tmp/signal-project.b64
+          base64 --decode /tmp/signal-project.b64 > /tmp/signal-project.tar.gz
+          echo "d9cc6747aef4c1c0055afb505d01509085ab9108d88254587816e81b9a923668  /tmp/signal-project.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/signal-project
+          tar -xzf /tmp/signal-project.tar.gz -C /tmp/signal-project
+          test -f /tmp/signal-project/signal/pyproject.toml
+          test -f /tmp/signal-project/signal/src/signal_bot/engine.py
+          rsync -a --delete --exclude='.git/' /tmp/signal-project/signal/ ./
+
+      - name: Commit standalone project
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Add standalone market signal bot"
+          git push origin HEAD:main
