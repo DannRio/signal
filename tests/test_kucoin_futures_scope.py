@@ -65,6 +65,7 @@ def test_api_reports_and_enforces_kucoin_futures_scope() -> None:
     health = client.get("/health").json()
     assert health["exchange_id"] == DEFAULT_EXCHANGE_ID
     assert health["market_type"] == DEFAULT_MARKET_TYPE
+    assert health["settlement_currency"] == "USDT"
 
     response = client.get(
         "/v1/live-signal",
@@ -105,4 +106,3 @@ def test_frame_analysis_rejects_non_usdt_futures_symbol() -> None:
     )
     assert response.status_code == 422
     assert "USDT-margined perpetual" in response.json()["detail"]
-
