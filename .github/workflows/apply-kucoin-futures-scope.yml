@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 3
+          fetch-depth: 4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -35,13 +35,41 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("src/signal_bot/api.py")
-          source = path.read_text(encoding="utf-8")
-          source = source.replace(
+          api_path = Path("src/signal_bot/api.py")
+          api_source = api_path.read_text(encoding="utf-8")
+          api_source = api_source.replace(
               "            market_type = DEFAULT_MARKET_TYPE\n",
               "",
           )
-          path.write_text(source, encoding="utf-8")
+          api_path.write_text(api_source, encoding="utf-8")
+
+          config_path = Path("src/signal_bot/config.py")
+          config_source = config_path.read_text(encoding="utf-8")
+          config_source = config_source.replace(
+              "    fee_bps: float = 6.0\n    slippage_bps: float = 4.0\n",
+              "    fee_bps: float = 10.0\n    slippage_bps: float = 5.0\n",
+          )
+          config_path.write_text(config_source, encoding="utf-8")
+
+          json_path = Path("configs/default.json")
+          json_source = json_path.read_text(encoding="utf-8")
+          json_source = json_source.replace(
+              '    "fee_bps": 6.0,\n    "slippage_bps": 4.0',
+              '    "fee_bps": 10.0,\n    "slippage_bps": 5.0',
+          )
+          json_path.write_text(json_source, encoding="utf-8")
+
+          readme_path = Path("README.md")
+          readme_source = readme_path.read_text(encoding="utf-8")
+          readme_source = readme_source.replace(
+              "Default backtests use a 6 bps taker-fee estimate per side and "
+              "4 bps slippage per side; adjust the configuration to match your "
+              "actual fee tier and observed fills.",
+              "Default backtests retain a conservative 10 bps fee estimate per "
+              "side and 5 bps slippage per side; adjust the configuration only "
+              "after documenting your actual fee tier and observed fills.",
+          )
+          readme_path.write_text(readme_source, encoding="utf-8")
           PY
 
       - name: Install and validate
