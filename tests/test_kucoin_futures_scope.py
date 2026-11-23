@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
+from signal_bot.api import create_app
 from signal_bot.machine_cli import _scan_request, build_parser
+from signal_bot.storage import SignalStore
 from signal_bot.venue import (
     DEFAULT_EXCHANGE_ID,
     DEFAULT_MARKET_TYPE,
@@ -36,7 +39,9 @@ def test_user_facing_venue_is_fixed() -> None:
 
 
 def test_machine_scan_defaults_to_kucoin_futures_and_normalizes_symbols() -> None:
-    args = build_parser().parse_args(["scan", "--symbols", "BTC/USDT,ETH/USDT"])
+    args = build_parser().parse_args(
+        ["scan", "--symbols", "BTC/USDT,ETH/USDT"]
+    )
     request = _scan_request(args)
     assert request.exchange_id == DEFAULT_EXCHANGE_ID
     assert request.market_type == DEFAULT_MARKET_TYPE
@@ -53,3 +58,21 @@ def test_kucoin_request_and_notional_caps() -> None:
         validate_kline_limit(501)
     with pytest.raises(VenueConfigurationError):
         validate_notional_multiple(5.01)
+
+
+def test_api_reports_and_enforces_kucoin_futures_scope() -> None:
+    client = TestClient(create_app(store=SignalStore(":memory:")))
+    health = client.get("/health").json()
+    assert health["exchange_id"] == DEFAULT_EXCHANGE_ID
+    assert health["market_type"] == DEFAULT_MARKET_TYPE
+
+    response = client.get(
+        "/v1/live-signal",
+        params={
+            "exchange": "kraken",
+            "market_type": "spot",
+            "symbol": "BTC/USDT",
+        },
+    )
+    assert response.status_code == 422
+    assert "restricted to KuCoin Futures" in response.json()["detail"]
