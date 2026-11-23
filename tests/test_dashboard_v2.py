@@ -11,7 +11,7 @@ def test_dashboard_and_assets_are_served() -> None:
     page = client.get("/")
     assert page.status_code == 200
     assert "Signal Machine" in page.text
-    assert "Backtest &amp; Validation" in page.text
+    assert "Backtest & Validation" in page.text
     assert client.get("/assets/styles.css").status_code == 200
     assert client.get("/assets/app.js").status_code == 200
 
