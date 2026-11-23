@@ -27,6 +27,7 @@ class MarketDataClient(Protocol):
         symbol: str,
         timeframe: str,
         limit: int,
+        since: int | None = None,
     ) -> list[list[float]]: ...
 
 
@@ -78,6 +79,7 @@ class CCXTMarketDataClient:
         symbol: str,
         timeframe: str,
         limit: int,
+        since: int | None = None,
     ) -> list[list[float]]:
         if not self.exchange.has.get("fetchOHLCV"):
             raise NotImplementedError(
@@ -86,6 +88,7 @@ class CCXTMarketDataClient:
         return self.exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
+            since=since,
             limit=limit,
         )
 
@@ -135,6 +138,9 @@ NowFactory = Callable[[], pd.Timestamp]
 
 
 class RegimeBotService:
+    _MAX_OHLCV_PAGES = 10
+    _MAX_PAGE_SIZE = 500
+
     def __init__(
         self,
         engine: RegimeSignalEngine | None = None,
@@ -191,10 +197,13 @@ class RegimeBotService:
                     f"{request.exchange_id} does not advertise "
                     f"timeframe {timeframe!r}."
                 )
-            candles = client.fetch_ohlcv(
+            candles = self._fetch_recent_ohlcv(
+                client=client,
                 symbol=request.symbol,
                 timeframe=timeframe,
                 limit=request.limit,
+                now=now,
+                include_extra_open_candle=request.closed_candles_only,
             )
             frame = normalize_ccxt_ohlcv(candles)
             if request.closed_candles_only:
@@ -203,16 +212,21 @@ class RegimeBotService:
                     timeframe,
                     now=now,
                 )
+            frame = frame.tail(request.limit).reset_index(drop=True)
             if frame.empty:
                 raise ValueError(
                     f"{request.exchange_id} returned no usable closed "
                     f"candles for {request.symbol} {timeframe}."
                 )
+            if len(frame) < self.engine.config.minimum_bars:
+                raise ValueError(
+                    f"{request.exchange_id} returned only {len(frame)} usable "
+                    f"{timeframe} candles for {request.symbol}; at least "
+                    f"{self.engine.config.minimum_bars} are required."
+                )
             if request.maximum_staleness_bars:
                 duration = timeframe_to_timedelta(timeframe)
-                latest_close = (
-                    frame.iloc[-1]["timestamp"] + duration
-                )
+                latest_close = frame.iloc[-1]["timestamp"] + duration
                 if (
                     now - latest_close
                     > duration * request.maximum_staleness_bars
@@ -223,6 +237,76 @@ class RegimeBotService:
                     )
             frames[timeframe] = frame
         return frames
+
+    def _fetch_recent_ohlcv(
+        self,
+        *,
+        client: MarketDataClient,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+        now: pd.Timestamp,
+        include_extra_open_candle: bool,
+    ) -> list[list[float]]:
+        """Assemble a recent OHLCV window across exchange page-size caps.
+
+        KuCoin Futures currently returns at most 200 rows through CCXT for a
+        single public Kline request even when a larger limit is requested. The
+        signal engine needs at least 220 closed rows, so one request is not a
+        usable live-data contract. This method paginates forward from a bounded
+        `since` timestamp, deduplicates exchange overlap, and returns the most
+        recent requested window.
+        """
+
+        duration = timeframe_to_timedelta(timeframe)
+        duration_ms = int(duration.total_seconds() * 1000)
+        now_ms = int(now.timestamp() * 1000)
+        target_rows = limit + (1 if include_extra_open_candle else 0)
+        safety_rows = 3
+        cursor = now_ms - duration_ms * (target_rows + safety_rows)
+        rows_by_timestamp: dict[int, list[float]] = {}
+
+        for _ in range(self._MAX_OHLCV_PAGES):
+            remaining = target_rows + safety_rows - len(rows_by_timestamp)
+            page_limit = min(
+                self._MAX_PAGE_SIZE,
+                max(1, remaining),
+            )
+            batch = client.fetch_ohlcv(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=page_limit,
+                since=cursor,
+            )
+            if not batch:
+                break
+
+            latest_timestamp: int | None = None
+            for row in batch:
+                if len(row) < 6:
+                    continue
+                timestamp = int(row[0])
+                rows_by_timestamp[timestamp] = list(row[:6])
+                latest_timestamp = (
+                    timestamp
+                    if latest_timestamp is None
+                    else max(latest_timestamp, timestamp)
+                )
+
+            if latest_timestamp is None:
+                break
+            next_cursor = latest_timestamp + duration_ms
+            if next_cursor <= cursor:
+                break
+            cursor = next_cursor
+            if cursor > now_ms:
+                break
+
+        ordered = [
+            rows_by_timestamp[timestamp]
+            for timestamp in sorted(rows_by_timestamp)
+        ]
+        return ordered[-target_rows:]
 
     def analyze_live(
         self,
