@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 
 DEFAULT_EXCHANGE_ID = "kucoinfutures"
 DEFAULT_MARKET_TYPE = "swap"
@@ -22,8 +23,8 @@ def normalize_exchange_id(value: str | None = None) -> str:
     }.get(normalized, normalized)
     if normalized != DEFAULT_EXCHANGE_ID:
         raise VenueConfigurationError(
-  "This signal project is restricted to KuCoin Futures. "
-  "Use exchange_id='kucoinfutures'."
+            "This signal project is restricted to KuCoin Futures. "
+            "Use exchange_id='kucoinfutures'."
         )
     return normalized
 
@@ -34,8 +35,8 @@ def normalize_market_type(value: str | None = None) -> str:
         normalized = DEFAULT_MARKET_TYPE
     if normalized != DEFAULT_MARKET_TYPE:
         raise VenueConfigurationError(
-  "This signal project supports KuCoin USDT-margined perpetual "
-  "swaps only. Use market_type='swap'."
+            "This signal project supports KuCoin USDT-margined perpetual "
+            "swaps only. Use market_type='swap'."
         )
     return normalized
 
@@ -57,28 +58,40 @@ def normalize_symbol(value: str) -> str:
         pair, settle = symbol, "USDT"
     if "/" not in pair:
         raise VenueConfigurationError(
-  "Use CCXT futures notation such as BTC/USDT:USDT. KuCoin raw "
-  "contract IDs such as XBTUSDTM are not accepted."
+            "Use CCXT futures notation such as BTC/USDT:USDT. KuCoin raw "
+            "contract IDs such as XBTUSDTM are not accepted."
         )
     base, quote = pair.split("/", 1)
     if not base or quote != "USDT" or settle != "USDT":
         raise VenueConfigurationError(
-  "Only KuCoin USDT-margined perpetual symbols are supported, "
-  "for example BTC/USDT:USDT."
+            "Only KuCoin USDT-margined perpetual symbols are supported, "
+            "for example BTC/USDT:USDT."
         )
     return f"{base}/{quote}:{settle}"
 
 
-def normalize_symbols(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def normalize_symbols(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(normalize_symbol(value) for value in values))
+
+
+def normalize_quote_currencies(values: Iterable[str]) -> tuple[str, ...]:
+    normalized = tuple(
+        dict.fromkeys(str(value).strip().upper() for value in values if str(value).strip())
+    )
+    if normalized != DEFAULT_QUOTE_CURRENCIES:
+        raise VenueConfigurationError(
+            "Only USDT-settled KuCoin perpetuals are supported. "
+            "Use quote_currencies=('USDT',)."
+        )
+    return normalized
 
 
 def validate_kline_limit(value: int | str) -> int:
     limit = int(value)
     if not 1 <= limit <= KUCOIN_MAX_KLINE_LIMIT:
         raise VenueConfigurationError(
-  f"KuCoin Futures candle requests must be between 1 and "
-  f"{KUCOIN_MAX_KLINE_LIMIT}."
+            "KuCoin Futures candle requests must be between 1 and "
+            f"{KUCOIN_MAX_KLINE_LIMIT}."
         )
     return limit
 
@@ -91,8 +104,8 @@ def validate_notional_multiple(
     multiple = float(value)
     if not math.isfinite(multiple) or not 0 < multiple <= MAX_NOTIONAL_MULTIPLE:
         raise VenueConfigurationError(
-  "maximum_notional_multiple must be greater than 0 and no more "
-  f"than {MAX_NOTIONAL_MULTIPLE}. It is a notional-to-equity cap, "
-  "not an exchange leverage setting."
+            "maximum_notional_multiple must be greater than 0 and no more "
+            f"than {MAX_NOTIONAL_MULTIPLE}. It is a notional-to-equity cap, "
+            "not an exchange leverage setting."
         )
     return multiple
