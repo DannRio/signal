@@ -24,6 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Apply only deterministic, safe Ruff fixes before the full test run.
           python -m ruff check src tests --fix
           python -m ruff check src tests
           python -m pytest -q
