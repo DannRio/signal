@@ -29,3 +29,10 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q src tests
+      - name: CLI smoke tests
+        run: |
+          signal-bot --help
+          signal-machine --help
+          signal-api --help
+      - name: Dashboard package-data smoke test
+        run: python -c "from importlib.resources import files; assert files('signal_bot').joinpath('web','index.html').is_file()"

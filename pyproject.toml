@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "market-signal-bot"
-version = "1.0.0"
-description = "Standalone multi-timeframe bullish/bearish market-regime and trade-signal engine"
+version = "2.0.0"
+description = "Professional exchange-agnostic market-regime, signal, scanning, and validation platform"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{name = "DannRio"}]
@@ -31,9 +31,13 @@ dev = [
 [project.scripts]
 signal-bot = "signal_bot.cli:main"
 signal-api = "signal_bot.api:main"
+signal-machine = "signal_bot.machine_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+signal_bot = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
