@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal Machine</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">PROFESSIONAL RESEARCH TERMINAL</div>
+      <h1>Signal Machine</h1>
+      <p class="subtitle">Regime classification, conditional trade plans, market scanning, and evidence-based validation.</p>
+    </div>
+    <div class="header-actions">
+      <span id="healthBadge" class="badge neutral">Checking service…</span>
+      <label class="api-key-field">
+        <span>API key</span>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="Optional">
+      </label>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Dashboard sections">
+    <button class="tab active" data-tab="live">Live Signal</button>
+    <button class="tab" data-tab="scanner">Market Scanner</button>
+    <button class="tab" data-tab="backtest">Backtest & Validation</button>
+    <button class="tab" data-tab="journal">Journal</button>
+  </nav>
+
+  <main>
+    <section id="tab-live" class="panel tab-panel active">
+      <div class="section-heading">
+        <div>
+          <h2>Live market decision</h2>
+          <p>Uses closed candles by default. A bullish or bearish regime is not automatically a trade.</p>
+        </div>
+        <button id="analyzeButton" class="primary">Analyze market</button>
+      </div>
+
+      <div class="form-grid compact">
+        <label>Exchange<input id="liveExchange" value="kraken"></label>
+        <label>Market type<select id="liveMarketType"><option>spot</option><option>swap</option><option>future</option></select></label>
+        <label>Symbol<input id="liveSymbol" value="BTC/USDT"></label>
+        <label>Entry timeframe<select id="liveExecution"><option>5m</option><option selected>15m</option><option>30m</option><option>1h</option><option>4h</option></select></label>
+        <label>Context timeframes<input id="liveContexts" value="1h,4h"></label>
+        <label>Account equity<input id="liveEquity" type="number" value="10000" min="1"></label>
+        <label>Risk per trade (%)<input id="liveRisk" type="number" value="0.5" min="0.01" step="0.05"></label>
+        <label>Chart candles<input id="liveChartBars" type="number" value="240" min="50" max="1000"></label>
+      </div>
+
+      <div id="liveLoading" class="loading hidden">Fetching closed candles and evaluating the market…</div>
+      <div id="liveError" class="message error hidden"></div>
+
+      <div id="liveResults" class="hidden">
+        <div class="metric-grid live-metrics">
+          <article class="metric-card"><span>Regime</span><strong id="regimeValue">—</strong></article>
+          <article class="metric-card"><span>Decision</span><strong id="actionValue">—</strong></article>
+          <article class="metric-card"><span>Score</span><strong id="scoreValue">—</strong></article>
+          <article class="metric-card"><span>Confidence</span><strong id="confidenceValue">—</strong></article>
+          <article class="metric-card"><span>Timeframe agreement</span><strong id="consensusValue">—</strong></article>
+          <article class="metric-card"><span>Decision candle</span><strong id="candleValue">—</strong></article>
+        </div>
+
+        <div class="chart-card">
+          <div class="chart-heading">
+            <h3>Price structure</h3>
+            <div class="legend"><span class="ema-fast">EMA 20</span><span class="ema-mid">EMA 50</span><span class="ema-slow">EMA 200</span></div>
+          </div>
+          <canvas id="priceChart" height="430"></canvas>
+        </div>
+
+        <div class="two-column">
+          <article class="content-card">
+            <h3>Trade plan</h3>
+            <div id="tradePlan" class="plan-grid"></div>
+          </article>
+          <article class="content-card">
+            <h3>Why this decision</h3>
+            <div id="decisionReasons"></div>
+          </article>
+        </div>
+
+        <article class="content-card">
+          <h3>Timeframe diagnostics</h3>
+          <div class="table-wrap"><table><thead><tr><th>Timeframe</th><th>Regime</th><th>Score</th><th>Confidence</th><th>ADX</th><th>RSI</th><th>ATR %</th><th>Volume ratio</th></tr></thead><tbody id="timeframeRows"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="tab-scanner" class="panel tab-panel">
+      <div class="section-heading">
+        <div><h2>Ranked market scanner</h2><p>Scans explicit symbols or discovers liquid markets, then ranks confirmed and forming setups.</p></div>
+        <button id="scanButton" class="primary">Run scan</button>
+      </div>
+      <div class="form-grid compact">
+        <label>Exchange<input id="scanExchange" value="kraken"></label>
+        <label>Market type<select id="scanMarketType"><option>spot</option><option>swap</option></select></label>
+        <label>Mode<select id="scanMode"><option value="explicit">Explicit symbols</option><option value="auto">Auto universe</option></select></label>
+        <label class="span-2">Symbols<input id="scanSymbols" value="BTC/USDT,ETH/USDT,SOL/USDT"></label>
+        <label>Quote currencies<input id="scanQuotes" value="USDT,USD"></label>
+        <label>Max markets<input id="scanMax" type="number" value="15" min="1" max="100"></label>
+        <label>Minimum quote volume<input id="scanVolume" type="number" value="0" min="0"></label>
+        <label>Maximum spread (bps)<input id="scanSpread" type="number" value="75" min="1"></label>
+        <label>Entry timeframe<input id="scanExecution" value="15m"></label>
+        <label>Context timeframes<input id="scanContexts" value="1h,4h"></label>
+      </div>
+      <div id="scanLoading" class="loading hidden">Scanning markets sequentially to respect exchange rate limits…</div>
+      <div id="scanError" class="message error hidden"></div>
+      <article id="scanResults" class="content-card hidden">
+        <div class="section-heading small"><h3>Ranked opportunities</h3><span id="scanSummary" class="muted"></span></div>
+        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Market</th><th>Decision</th><th>Regime</th><th>Confidence</th><th>Consensus</th><th>Score</th><th>Volume</th><th>Spread</th><th>Trigger</th></tr></thead><tbody id="scanRows"></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="tab-backtest" class="panel tab-panel">
+      <div class="section-heading">
+        <div><h2>Historical backtest and validation</h2><p>Downloads exchange candles, includes costs, and evaluates the same decision engine without look-ahead.</p></div>
+        <div class="button-group"><button id="backtestButton" class="primary">Run backtest</button><button id="validateButton" class="secondary">Full validation</button></div>
+      </div>
+      <div class="form-grid compact">
+        <label>Exchange<input id="btExchange" value="kraken"></label>
+        <label>Market type<select id="btMarketType"><option>spot</option><option>swap</option></select></label>
+        <label>Symbol<input id="btSymbol" value="BTC/USDT"></label>
+        <label>Entry timeframe<input id="btExecution" value="15m"></label>
+        <label>Context timeframes<input id="btContexts" value="1h,4h"></label>
+        <label>Start date<input id="btStart" type="date"></label>
+        <label>End date<input id="btEnd" type="date"></label>
+        <label>Starting equity<input id="btEquity" type="number" value="10000" min="1"></label>
+        <label>Risk per trade (%)<input id="btRisk" type="number" value="0.5" min="0.01" step="0.05"></label>
+        <label>Monte Carlo paths<input id="btMonteCarlo" type="number" value="2000" min="100" max="100000"></label>
+      </div>
+      <div class="message warning"><strong>Research rule:</strong> a positive backtest is not enough. The validation gate also checks untouched test data, cost stress, trade count, drawdown, and Monte Carlo risk.</div>
+      <div id="btLoading" class="loading hidden">Downloading historical candles and simulating trades. Large date ranges may take several minutes…</div>
+      <div id="btError" class="message error hidden"></div>
+      <div id="btResults" class="hidden">
+        <div class="metric-grid" id="btMetrics"></div>
+        <div class="chart-card"><h3>Equity curve</h3><canvas id="equityChart" height="330"></canvas></div>
+        <div class="two-column">
+          <article class="content-card"><h3>Trade quality</h3><div id="tradeQuality" class="key-value"></div></article>
+          <article class="content-card"><h3>Validation gate</h3><div id="validationGate"><p class="muted">Run Full validation to populate this gate.</p></div></article>
+        </div>
+        <article class="content-card"><h3>Yearly performance</h3><div class="table-wrap"><table><thead><tr><th>Year</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L</th><th>Average R</th><th>Profit factor</th></tr></thead><tbody id="yearlyRows"></tbody></table></div></article>
+        <article class="content-card"><h3>Trade ledger</h3><div class="table-wrap tall"><table><thead><tr><th>Entry</th><th>Exit</th><th>Side</th><th>Setup</th><th>Entry price</th><th>Exit price</th><th>Net P&amp;L</th><th>R</th><th>Reason</th></tr></thead><tbody id="tradeRows"></tbody></table></div></article>
+      </div>
+    </section>
+
+    <section id="tab-journal" class="panel tab-panel">
+      <div class="section-heading">
+        <div><h2>Persistent research journal</h2><p>Signals, scans, datasets, and backtests are stored in SQLite so restarts do not erase evidence.</p></div>
+        <button id="refreshJournalButton" class="primary">Refresh journal</button>
+      </div>
+      <div id="journalError" class="message error hidden"></div>
+      <div class="metric-grid" id="journalMetrics"></div>
+      <div class="two-column">
+        <article class="content-card"><h3>Recent signals</h3><div id="signalJournal" class="journal-list"></div></article>
+        <article class="content-card"><h3>Historical datasets</h3><div id="datasetJournal" class="journal-list"></div></article>
+      </div>
+      <article class="content-card"><h3>Recent backtests</h3><div id="backtestJournal" class="journal-list"></div></article>
+    </section>
+  </main>
+
+  <footer>
+    Signal-only research software. It does not submit orders, guarantee profit, or replace venue eligibility and risk checks.
+  </footer>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,7 +1,22 @@
-# Security
+# Security Policy
 
-The project currently uses unauthenticated public market data and should not require exchange API credentials.
+## Scope
 
-Do not commit API keys, secrets, webhooks, or account identifiers. If authenticated features are added later, use environment variables or an external secret manager, restrict keys to the minimum permissions, disable withdrawals, and separate research credentials from any execution environment.
+This project consumes public market data and is signal-only. It must not be modified to accept exchange secrets or submit orders without a separate security and execution review.
 
-The FastAPI server is a development interface. Bind it to localhost unless it is placed behind authenticated TLS infrastructure with rate limiting and request-size controls.
+## Supported version
+
+Security fixes target the current `main` branch.
+
+## Reporting
+
+Report vulnerabilities privately to the repository owner. Do not publish API keys, webhook secrets, private datasets, or exploit details in a public issue.
+
+## Safe operation
+
+- Keep the server bound to `127.0.0.1` for local use.
+- Set `SIGNAL_API_KEY` when another local process can reach the API.
+- For network exposure, place the service behind TLS, authentication, rate limiting, request-size controls, and process supervision.
+- Restrict webhook destinations and never embed credentials in source code.
+- Treat downloaded market data as untrusted input; the application validates timestamps and OHLC relationships before analysis.
+- Back up the SQLite journal before upgrades.

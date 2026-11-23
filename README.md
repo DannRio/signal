@@ -1,52 +1,65 @@
-# Market Signal Bot
+# Professional Market Signal Machine
 
-A standalone, exchange-agnostic Python engine that classifies a market as bullish, bearish, ranging, or transitional and produces conditional, risk-defined entry and exit plans.
+A standalone, exchange-agnostic research platform that classifies crypto markets, produces conditional long/short trade plans, scans liquid markets, downloads multi-year history, backtests the same decision engine, and records evidence in a persistent journal.
 
-This repository is deliberately separate from any execution bot. It consumes public OHLCV data, generates signals, and backtests the same decision engine. It does **not** place orders.
+It is deliberately **signal-only**. It does not submit orders, store exchange credentials, or claim that a backtest proves a profitable edge.
 
-## What it produces
+## Major capabilities
 
-- `STRONG_BULLISH`, `BULLISH`, `RANGE`, `TRANSITION`, `BEARISH`, or `STRONG_BEARISH`
-- `LONG`, `SHORT`, `WATCH_LONG`, `WATCH_SHORT`, or `NO_TRADE`
-- an entry trigger and entry zone
-- structure/ATR-based stop loss
-- TP1, TP2, and TP3
-- account-risk-based position size
-- break-even, trailing-stop, and maximum-holding-time rules
-- explainable per-timeframe scores and warnings
+- Multi-timeframe regimes: strong bullish, bullish, range, transition, bearish, and strong bearish
+- Decisions: `LONG`, `SHORT`, `WATCH_LONG`, `WATCH_SHORT`, and `NO_TRADE`
+- Breakout and pullback-continuation confirmation
+- Entry zone, structural/ATR stop, TP1/TP2/TP3, break-even and trailing rules
+- Risk-based sizing with fee and slippage estimates
+- Liquid-market discovery and ranked multi-symbol scanning
+- Paginated, resumable CCXT historical downloads with checksums and gap detection
+- Closed-candle, next-bar, no-look-ahead backtesting
+- Chronological train/validation/test evaluation
+- Cost-stress and Monte Carlo robustness analysis
+- A research gate that distinguishes working software from evidence suitable for paper validation
+- Persistent SQLite journal for signals, scans, datasets, alerts, and backtests
+- Console, JSONL, and generic webhook alerts with persistent cooldowns
+- Local browser dashboard with price chart, signal explanation, scanner, backtest charts, trade ledger, and journal
+- FastAPI endpoints, Docker support, and automated CI on Python 3.11 and 3.12
 
-A score or confidence value is **not a probability of profit**. A functioning signal engine is not evidence of a trading edge; the edge must be demonstrated through out-of-sample and paper validation.
-
-## Decision model
-
-The engine combines:
-
-- EMA 20/50/200 structure and slope
-- ADX and DMI directional strength
-- MACD histogram and RSI momentum
-- Donchian market structure
-- relative volume
-- ATR and volatility-percentile risk gates
-- higher-timeframe weighted consensus
-- breakout and pullback-continuation entry confirmation
-
-A bullish or bearish regime alone does not force a trade. The engine emits a confirmed `LONG` or `SHORT` only when the regime, multi-timeframe alignment, execution trigger, volatility filters, and risk plan all pass.
-
-## Installation
-
-Python 3.11 or newer is required.
+## Windows PowerShell setup
 
 ```powershell
-python -m venv .venv
+cd C:\Trading\Signal
+
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 python -m pytest -q
 ```
 
-## Analyze a live market
+## Start the real dashboard
 
-Public market data is retrieved through CCXT. No API key is required.
+```powershell
+signal-machine dashboard
+```
+
+Open:
+
+```text
+http://127.0.0.1:8081
+```
+
+The dashboard has four sections:
+
+1. **Live Signal** — regime, decision, confidence, timeframe alignment, price chart, entry, stop and targets.
+2. **Market Scanner** — ranked confirmed and forming setups across explicit symbols or an auto-discovered liquid universe.
+3. **Backtest & Validation** — automatic historical download, equity curve, yearly results, trade ledger, OOS testing, cost stress and Monte Carlo analysis.
+4. **Journal** — persistent signals, datasets and research runs.
+
+The developer API documentation remains available at:
+
+```text
+http://127.0.0.1:8081/docs
+```
+
+## Live signal from PowerShell
 
 ```powershell
 signal-bot analyze `
@@ -59,105 +72,139 @@ signal-bot analyze `
   --risk-percent 0.5
 ```
 
-Machine-readable output:
+Only closed candles are analyzed by default. A directional regime does not force an entry. Confirmed `LONG` or `SHORT` requires alignment, a valid trigger, volatility controls, and a valid risk plan.
+
+## Scan markets
+
+Explicit symbols:
 
 ```powershell
-signal-bot analyze --exchange kraken --market-type spot --symbol BTC/USDT --execution-timeframe 15m --context-timeframes 1h,4h --json
+signal-machine scan `
+  --exchange kraken `
+  --market-type spot `
+  --symbols BTC/USDT,ETH/USDT,SOL/USDT `
+  --execution-timeframe 15m `
+  --context-timeframes 1h,4h
 ```
 
-The bot analyzes only closed candles by default. `--include-open-candle` is available for research, but open-candle signals can change before close and should not be treated as stable.
-
-## Watch for signal changes
+Auto-discover a liquid universe:
 
 ```powershell
-signal-bot watch `
+signal-machine scan `
+  --exchange kraken `
+  --market-type spot `
+  --auto-universe `
+  --quote-currencies USD,USDT `
+  --max-markets 20 `
+  --minimum-quote-volume 5000000
+```
+
+Ticker spread is only a universe-quality screen. It is not an execution fill model.
+
+## Download historical data
+
+```powershell
+signal-machine download `
+  --exchange kraken `
+  --market-type spot `
+  --symbol BTC/USDT `
+  --timeframes 15m,1h,4h `
+  --start 2023-01-01 `
+  --end 2026-11-01
+```
+
+Data is stored under `data/history/`, deduplicated, checksummed, and registered in SQLite. Downloads resume from the latest stored candle.
+
+## Run a backtest directly from the exchange
+
+```powershell
+signal-machine backtest-live `
   --exchange kraken `
   --market-type spot `
   --symbol BTC/USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
-  --interval-seconds 60
-```
-
-Watch mode prints only when the signal fingerprint changes. It never submits an order.
-
-## Backtest local data
-
-CSV files must contain:
-
-```text
-timestamp,open,high,low,close,volume
-```
-
-Example:
-
-```powershell
-signal-bot backtest `
-  --symbol BTC/USDT `
-  --execution-timeframe 15m `
-  --execution-csv data/btc_15m.csv `
-  --context-csv 1h=data/btc_1h.csv `
-  --context-csv 4h=data/btc_4h.csv `
+  --start 2023-01-01 `
+  --end 2026-11-01 `
   --equity 10000 `
-  --risk-percent 0.5 `
-  --json
+  --risk-percent 0.5
 ```
+
+Spot research is long-only. Swap/futures research can evaluate both long and short setups.
 
 Backtest safeguards include:
 
-- decisions only after candle close
-- next-bar entry and regime-flip exit
+- signals after candle close only
+- next-bar entries and regime exits
 - higher-timeframe candles unavailable until fully closed
 - fees and slippage
-- stop-first resolution when stop and target are touched in one bar
-- adverse opening-price fills when price gaps through a stop
-- partial profit-taking, break-even, ATR trailing stop, and time exit
+- conservative stop-first handling for ambiguous bars
+- adverse open fills when price gaps through a stop
+- partial exits, break-even, ATR trailing stops and time exits
 
-## API
-
-```powershell
-python -m pip install -e ".[web]"
-signal-api --host 127.0.0.1 --port 8081
-```
-
-Endpoints:
-
-- `GET /health`
-- `GET /v1/live-signal`
-- `POST /v1/analyze`
-
-Keep the development server bound to `127.0.0.1`. Internet-facing deployment needs authentication, TLS termination, rate limiting, request-size controls, logging, and process supervision.
-
-## Configuration
-
-Use the supplied validated configuration:
+## Full robustness validation
 
 ```powershell
-signal-bot --config configs/default.json analyze --exchange kraken --market-type spot --symbol ETH/USDT --execution-timeframe 15m --context-timeframes 1h,4h
+signal-machine validate `
+  --exchange kraken `
+  --market-type spot `
+  --symbol BTC/USDT `
+  --execution-timeframe 15m `
+  --context-timeframes 1h,4h `
+  --start 2021-01-01 `
+  --end 2026-11-01 `
+  --monte-carlo 5000
 ```
 
-Unknown configuration fields, invalid indicator periods, excessive risk, and unsafe fee/slippage assumptions are rejected.
+The gate checks trade count, expectancy, profit factor, drawdown, untouched chronological test performance, maximum-cost stress, and Monte Carlo loss probability. A pass means **eligible for disciplined paper validation**, not permission to trade live.
 
-## Docker
+## Continuous monitoring and alerts
 
 ```powershell
-docker build -t market-signal-bot .
-docker run --rm -p 8081:8081 market-signal-bot
+signal-machine monitor `
+  --exchange kraken `
+  --market-type spot `
+  --symbols BTC/USDT,ETH/USDT,SOL/USDT `
+  --execution-timeframe 15m `
+  --context-timeframes 1h,4h `
+  --interval-seconds 60 `
+  --alert-sinks console,jsonl
 ```
 
-## Project structure
+Webhook delivery:
+
+```powershell
+$env:SIGNAL_ALERT_WEBHOOK_URL = "https://your-endpoint.example/signal"
+signal-machine monitor --symbols BTC/USDT --alert-sinks console,webhook
+```
+
+## Optional local API key
+
+The server binds to `127.0.0.1` by default. To require an API key for `/v1/*` endpoints:
+
+```powershell
+$env:SIGNAL_API_KEY = "use-a-long-random-secret"
+signal-machine dashboard
+```
+
+Enter the same key in the dashboard header. Internet exposure additionally requires TLS, reverse-proxy authentication, rate limiting, request-size limits, logging, and process supervision.
+
+## Project layout
 
 ```text
 src/signal_bot/
-  api.py          FastAPI interface
-  backtest.py     no-lookahead simulator
-  cli.py          analyze/watch/backtest commands
-  config.py       immutable validated configuration
-  engine.py       regime, signal, entry and exit logic
-  indicators.py   technical features
-  models.py       typed domain models
-  service.py      standalone CCXT market-data service
-  validation.py   OHLCV and timeframe validation
+  engine.py       market regime, setup and trade-plan logic
+  indicators.py   EMA, RSI, ATR, ADX/DMI, MACD, volume and structure
+  service.py      live public CCXT market data
+  history.py      paginated, resumable historical data
+  scanner.py      liquid-universe discovery and ranked scanning
+  backtest.py     no-look-ahead simulator
+  research.py     diagnostics, OOS, stress, Monte Carlo and validation gate
+  storage.py      SQLite research journal
+  alerts.py       persistent cooldown and alert sinks
+  api.py          API and dashboard server
+  machine_cli.py  operational command-line interface
+  web/            dependency-free browser dashboard
 ```
 
-See [Architecture](docs/ARCHITECTURE.md) and [Validation Standard](docs/VALIDATION.md).
+See [Professional Architecture](docs/PROFESSIONAL_MACHINE.md), [Operations](docs/OPERATIONS.md), and [Validation Standard](docs/VALIDATION.md).
