@@ -24,7 +24,7 @@ CCXT public OHLCV or caller-supplied frames
 
 ## Design boundaries
 
-The deterministic engine has no exchange dependency. It accepts pandas OHLCV frames and returns immutable domain models. CCXT access exists only in `service.py`, making the decision logic testable without a network connection.
+The deterministic engine has no exchange dependency. It accepts pandas OHLCV frames and returns immutable domain models. CCXT access exists only in `service.py`, making the decision logic testable without a network connection. The operator boundary is intentionally narrower: CLI, API, dashboard, history, and scanner inputs are restricted to KuCoin USDT-margined perpetual swaps.
 
 The project is signal-only. There is no authenticated exchange adapter, order manager, or live execution route. That boundary prevents an unvalidated research signal from silently becoming an executable order.
 
