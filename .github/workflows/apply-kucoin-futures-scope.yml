@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -32,6 +32,17 @@ jobs:
             capture { sub(/^          /, ""); print }
           ' /tmp/original-workflow.yml > /tmp/apply-kucoin-scope.py
           python /tmp/apply-kucoin-scope.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/signal_bot/api.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              "            market_type = DEFAULT_MARKET_TYPE\n",
+              "",
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
 
       - name: Install and validate
         shell: bash
