@@ -11,6 +11,7 @@ from signal_bot.venue import (
     DEFAULT_MARKET_TYPE,
     VenueConfigurationError,
     enforce_venue,
+    normalize_quote_currencies,
     normalize_symbol,
     validate_kline_limit,
     validate_notional_multiple,
@@ -106,3 +107,27 @@ def test_frame_analysis_rejects_non_usdt_futures_symbol() -> None:
     )
     assert response.status_code == 422
     assert "USDT-margined perpetual" in response.json()["detail"]
+
+
+def test_only_usdt_quote_universe_is_accepted() -> None:
+    assert normalize_quote_currencies(["usdt"]) == ("USDT",)
+    with pytest.raises(VenueConfigurationError):
+        normalize_quote_currencies(["USD"])
+    with pytest.raises(VenueConfigurationError):
+        normalize_quote_currencies(["USDT", "USD"])
+
+
+def test_scan_api_rejects_non_usdt_universe_before_network() -> None:
+    client = TestClient(create_app(store=SignalStore(":memory:")))
+    response = client.post(
+        "/v1/scan",
+        json={
+            "exchange_id": DEFAULT_EXCHANGE_ID,
+            "market_type": DEFAULT_MARKET_TYPE,
+            "auto_universe": True,
+            "quote_currencies": ["USD"],
+        },
+    )
+    assert response.status_code == 422
+    assert "Only USDT-settled" in response.json()["detail"]
+

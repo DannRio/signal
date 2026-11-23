@@ -28,6 +28,7 @@ from .venue import (
     DEFAULT_QUOTE_CURRENCIES,
     KUCOIN_MAX_KLINE_LIMIT,
     enforce_venue,
+    normalize_quote_currencies,
     normalize_symbol,
     normalize_symbols,
     validate_kline_limit,
@@ -194,7 +195,9 @@ def _scan_request(args: argparse.Namespace) -> ScanRequest:
         context_timeframes=_items(args.context_timeframes),
         symbols=symbols,
         auto_universe=auto,
-        quote_currencies=_items(args.quote_currencies),
+        quote_currencies=normalize_quote_currencies(
+            _items(args.quote_currencies)
+        ),
         max_markets=args.max_markets,
         minimum_quote_volume=args.minimum_quote_volume,
         maximum_spread_bps=args.maximum_spread_bps,

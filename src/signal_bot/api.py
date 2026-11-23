@@ -24,6 +24,7 @@ from .venue import (
     DEFAULT_QUOTE_CURRENCIES,
     KUCOIN_MAX_KLINE_LIMIT,
     enforce_venue,
+    normalize_quote_currencies,
     normalize_symbol,
     normalize_symbols,
     validate_kline_limit,
@@ -269,9 +270,11 @@ def create_app(
                     context_timeframes=contexts,
                     symbols=symbols,
                     auto_universe=bool(payload.get("auto_universe", not symbols)),
-                    quote_currencies=_string_tuple(
-                        payload.get(
-                            "quote_currencies", DEFAULT_QUOTE_CURRENCIES
+                    quote_currencies=normalize_quote_currencies(
+                        _string_tuple(
+                            payload.get(
+                                "quote_currencies", DEFAULT_QUOTE_CURRENCIES
+                            )
                         )
                     ),
                     max_markets=int(payload.get("max_markets", 20)),

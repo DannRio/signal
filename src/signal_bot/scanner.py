@@ -14,6 +14,7 @@ from .service import (
     RegimeBotService,
 )
 from .storage import SignalStore
+from .venue import normalize_quote_currencies
 
 _LEVERAGED_TOKEN = re.compile(
     r"(?:UP|DOWN|BULL|BEAR|[235]L|[235]S)$",
@@ -58,6 +59,7 @@ class UniverseRequest:
             raise ValueError("maximum_spread_bps must be positive or null.")
         if not self.symbols and not self.quote_currencies:
             raise ValueError("quote_currencies cannot be empty in auto-universe mode.")
+        normalize_quote_currencies(self.quote_currencies)
 
 
 class UniverseProvider(Protocol):
@@ -113,6 +115,9 @@ class CCXTUniverseProvider:
             base = str(market.get("base") or "")
             quote = str(market.get("quote") or "")
             if not base or quote.upper() not in quotes:
+                continue
+            settle = str(market.get("settle") or quote).upper()
+            if settle != "USDT":
                 continue
             if (
                 not request.include_leveraged_tokens
