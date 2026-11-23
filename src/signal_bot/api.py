@@ -18,6 +18,15 @@ from .research import ResearchService
 from .scanner import MarketScanner, ScanRequest
 from .service import LiveMarketRequest, RegimeBotService, parse_timeframes
 from .storage import SignalStore
+from .venue import (
+    DEFAULT_EXCHANGE_ID,
+    DEFAULT_MARKET_TYPE,
+    DEFAULT_QUOTE_CURRENCIES,
+    KUCOIN_MAX_KLINE_LIMIT,
+    enforce_venue,
+    normalize_symbol,
+    normalize_symbols,
+)
 
 
 def create_app(
@@ -57,11 +66,11 @@ def create_app(
     configured_api_key = os.getenv("SIGNAL_API_KEY", "").strip()
 
     app = FastAPI(
-        title="Professional Market Signal Machine",
+        title="KuCoin Futures Signal Machine",
         version="2.0.0",
         description=(
-            "Exchange-agnostic, signal-only market-regime analysis, scanning, "
-            "historical research, and validation platform. Confidence is a "
+            "KuCoin USDT-perpetual, signal-only market-regime analysis, "
+            "scanning, historical research, and validation platform. Confidence is a "
             "rule-alignment score, not a probability of profit."
         ),
     )
@@ -115,13 +124,16 @@ def create_app(
             "database": active_store.path,
             "api_key_required": bool(configured_api_key),
             "execution_enabled": False,
+            "exchange_id": DEFAULT_EXCHANGE_ID,
+            "market_type": DEFAULT_MARKET_TYPE,
+            "settlement_currency": "USDT",
         }
 
     @router.get("/live-signal")
     def live_signal(
         symbol: str = Query(...),
-        exchange: str = Query("kraken"),
-        market_type: str = Query("spot"),
+        exchange: str = Query(DEFAULT_EXCHANGE_ID),
+        market_type: str = Query(DEFAULT_MARKET_TYPE),
         execution_timeframe: str = Query("15m"),
         context_timeframes: str = Query("1h,4h"),
         limit: int = Query(500, ge=1, le=5000),
@@ -152,8 +164,8 @@ def create_app(
             )
             active_store.record_signal(
                 signal,
-                exchange_id=exchange,
-                market_type=market_type,
+                exchange_id=request.exchange_id,
+                market_type=request.market_type,
             )
             return to_dict(signal)
         except Exception as exc:
@@ -237,14 +249,18 @@ def create_app(
     @router.post("/scan")
     def scan(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            symbols = _string_tuple(payload.get("symbols"))
+            exchange_id, market_type = enforce_venue(
+                str(payload.get("exchange_id", DEFAULT_EXCHANGE_ID)),
+                str(payload.get("market_type", DEFAULT_MARKET_TYPE)),
+            )
+            symbols = normalize_symbols(_string_tuple(payload.get("symbols")))
             contexts = _string_tuple(
                 payload.get("context_timeframes", ("1h", "4h"))
             )
             report = active_scanner.scan(
                 ScanRequest(
-                    exchange_id=str(payload.get("exchange_id", "kraken")),
-                    market_type=str(payload.get("market_type", "spot")),
+                    exchange_id=exchange_id,
+                    market_type=market_type,
                     execution_timeframe=str(
                         payload.get("execution_timeframe", "15m")
                     ).lower(),
@@ -252,14 +268,16 @@ def create_app(
                     symbols=symbols,
                     auto_universe=bool(payload.get("auto_universe", not symbols)),
                     quote_currencies=_string_tuple(
-                        payload.get("quote_currencies", ("USDT", "USD"))
+                        payload.get(
+                            "quote_currencies", DEFAULT_QUOTE_CURRENCIES
+                        )
                     ),
                     max_markets=int(payload.get("max_markets", 20)),
                     minimum_quote_volume=float(
-                        payload.get("minimum_quote_volume", 0.0)
+                        payload.get("minimum_quote_volume", 1_000_000.0)
                     ),
                     maximum_spread_bps=_optional_float(
-                        payload, "maximum_spread_bps", default=75.0
+                        payload, "maximum_spread_bps", default=25.0
                     ),
                     limit=int(payload.get("limit", 500)),
                     equity=float(payload.get("equity", 10_000.0)),
@@ -276,16 +294,23 @@ def create_app(
     @router.post("/history/download")
     def download_history(payload: dict[str, Any]) -> dict[str, Any]:
         try:
+            exchange_id, market_type = enforce_venue(
+                str(payload.get("exchange_id", DEFAULT_EXCHANGE_ID)),
+                str(payload.get("market_type", DEFAULT_MARKET_TYPE)),
+            )
             timeframe = str(payload["timeframe"]).lower()
             _, result = active_history.download(
                 HistoryRequest(
-                    exchange_id=str(payload.get("exchange_id", "kraken")),
-                    market_type=str(payload.get("market_type", "spot")),
-                    symbol=str(payload["symbol"]),
+                    exchange_id=exchange_id,
+                    market_type=market_type,
+                    symbol=normalize_symbol(str(payload["symbol"])),
                     timeframe=timeframe,
                     start=payload["start"],
                     end=payload["end"],
-                    limit=int(payload.get("limit", 1000)),
+                    limit=min(
+                        int(payload.get("limit", KUCOIN_MAX_KLINE_LIMIT)),
+                        KUCOIN_MAX_KLINE_LIMIT,
+                    ),
                     output_dir=str(
                         payload.get("output_dir", "data/history")
                     ),
@@ -302,7 +327,6 @@ def create_app(
         try:
             frames, datasets = _download_frames(active_history, payload)
             execution = str(payload.get("execution_timeframe", "15m")).lower()
-            market_type = str(payload.get("market_type", "spot")).lower()
             result = research.backtest(
                 symbol=str(payload["symbol"]),
                 frames=frames,
@@ -312,14 +336,14 @@ def create_app(
                 maximum_notional_multiple=_optional_float(
                     payload, "maximum_notional_multiple"
                 ),
-                allow_short=market_type != "spot",
+                allow_short=True,
             )
             diagnostics = research.diagnostics(result)
             request_payload = {
                 **payload,
                 "execution_timeframe": execution,
-                "exchange_id": str(payload.get("exchange_id", "kraken")),
-                "market_type": str(payload.get("market_type", "spot")),
+                "exchange_id": DEFAULT_EXCHANGE_ID,
+                "market_type": DEFAULT_MARKET_TYPE,
             }
             run_id = active_store.record_backtest(
                 request=request_payload,
@@ -342,7 +366,6 @@ def create_app(
         try:
             frames, datasets = _download_frames(active_history, payload)
             execution = str(payload.get("execution_timeframe", "15m")).lower()
-            market_type = str(payload.get("market_type", "spot")).lower()
             validation = research.full_validation(
                 symbol=str(payload["symbol"]),
                 frames=frames,
@@ -355,13 +378,13 @@ def create_app(
                 monte_carlo_simulations=int(
                     payload.get("monte_carlo_simulations", 2000)
                 ),
-                allow_short=market_type != "spot",
+                allow_short=True,
             )
             request_payload = {
                 **payload,
                 "execution_timeframe": execution,
-                "exchange_id": str(payload.get("exchange_id", "kraken")),
-                "market_type": str(payload.get("market_type", "spot")),
+                "exchange_id": DEFAULT_EXCHANGE_ID,
+                "market_type": DEFAULT_MARKET_TYPE,
             }
             run_id = active_store.record_backtest(
                 request=request_payload,
@@ -418,6 +441,10 @@ def _asset(name: str) -> str:
 
 
 def _live_request(payload: dict[str, Any]) -> LiveMarketRequest:
+    exchange_id, market_type = enforce_venue(
+        str(payload.get("exchange_id", DEFAULT_EXCHANGE_ID)),
+        str(payload.get("market_type", DEFAULT_MARKET_TYPE)),
+    )
     execution = str(payload.get("execution_timeframe", "15m")).strip().lower()
     contexts = tuple(
         value
@@ -427,9 +454,9 @@ def _live_request(payload: dict[str, Any]) -> LiveMarketRequest:
         if value != execution
     )
     return LiveMarketRequest(
-        exchange_id=str(payload.get("exchange_id", "kraken")),
-        market_type=str(payload.get("market_type", "spot")),
-        symbol=str(payload["symbol"]),
+        exchange_id=exchange_id,
+        market_type=market_type,
+        symbol=normalize_symbol(str(payload["symbol"])),
         execution_timeframe=execution,
         context_timeframes=contexts,
         limit=int(payload.get("limit", 500)),
@@ -444,19 +471,26 @@ def _download_frames(
     history: HistoryService,
     payload: dict[str, Any],
 ):
+    exchange_id, market_type = enforce_venue(
+        str(payload.get("exchange_id", DEFAULT_EXCHANGE_ID)),
+        str(payload.get("market_type", DEFAULT_MARKET_TYPE)),
+    )
     execution = str(payload.get("execution_timeframe", "15m")).lower()
     contexts = _string_tuple(
         payload.get("context_timeframes", ("1h", "4h"))
     )
     timeframes = tuple(dict.fromkeys((execution, *contexts)))
     return history.download_bundle(
-        exchange_id=str(payload.get("exchange_id", "kraken")),
-        market_type=str(payload.get("market_type", "spot")),
-        symbol=str(payload["symbol"]),
+        exchange_id=exchange_id,
+        market_type=market_type,
+        symbol=normalize_symbol(str(payload["symbol"])),
         timeframes=timeframes,
         start=payload["start"],
         end=payload["end"],
-        limit=int(payload.get("download_limit", 1000)),
+        limit=min(
+            int(payload.get("download_limit", KUCOIN_MAX_KLINE_LIMIT)),
+            KUCOIN_MAX_KLINE_LIMIT,
+        ),
         output_dir=str(payload.get("output_dir", "data/history")),
         resume=bool(payload.get("resume", True)),
         strict_gaps=bool(payload.get("strict_gaps", False)),

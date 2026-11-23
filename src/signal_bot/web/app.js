@@ -64,8 +64,9 @@ function livePayload() {
     context_timeframes: $("liveContexts").value.trim(),
     equity: Number($("liveEquity").value),
     risk_percent: Number($("liveRisk").value),
+    maximum_notional_multiple: Number($("liveLeverage").value),
     chart_bars: Number($("liveChartBars").value),
-    limit: Math.max(500, Number($("liveChartBars").value) + 220),
+    limit: 500,
   };
 }
 async function analyzeMarket() {
@@ -129,7 +130,8 @@ function scannerPayload() {
     quote_currencies: $("scanQuotes").value.trim(), max_markets: Number($("scanMax").value),
     minimum_quote_volume: Number($("scanVolume").value), maximum_spread_bps: Number($("scanSpread").value),
     execution_timeframe: $("scanExecution").value.trim(), context_timeframes: $("scanContexts").value.trim(),
-    equity: Number($("liveEquity").value), risk_percent: Number($("liveRisk").value), limit: 500,
+    equity: Number($("liveEquity").value), risk_percent: Number($("liveRisk").value),
+    maximum_notional_multiple: Number($("liveLeverage").value), limit: 500,
   };
 }
 async function runScan() {
@@ -158,6 +160,7 @@ function backtestPayload() {
     symbol: $("btSymbol").value.trim(), execution_timeframe: $("btExecution").value.trim(),
     context_timeframes: $("btContexts").value.trim(), start: $("btStart").value,
     end: $("btEnd").value, equity: Number($("btEquity").value), risk_percent: Number($("btRisk").value),
+    maximum_notional_multiple: Number($("btLeverage").value),
     monte_carlo_simulations: Number($("btMonteCarlo").value), resume: true, strict_gaps: false,
   };
 }

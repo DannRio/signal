@@ -17,6 +17,11 @@ from .service import (
     RegimeBotService,
     parse_timeframes,
 )
+from .venue import (
+    DEFAULT_EXCHANGE_ID,
+    DEFAULT_MARKET_TYPE,
+    normalize_symbol,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         "backtest",
         help="Backtest the engine using closed-candle CSV files.",
     )
-    backtest.add_argument("--symbol", required=True)
+    backtest.add_argument("--symbol", required=True, type=normalize_symbol)
     backtest.add_argument(
         "--execution-timeframe",
         required=True,
@@ -107,9 +112,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_live_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exchange", default="kraken")
-    parser.add_argument("--market-type", default="spot")
-    parser.add_argument("--symbol", required=True)
+    parser.add_argument(
+        "--exchange",
+        default=DEFAULT_EXCHANGE_ID,
+        choices=(DEFAULT_EXCHANGE_ID,),
+    )
+    parser.add_argument(
+        "--market-type",
+        default=DEFAULT_MARKET_TYPE,
+        choices=(DEFAULT_MARKET_TYPE,),
+    )
+    parser.add_argument("--symbol", required=True, type=normalize_symbol)
     parser.add_argument(
         "--execution-timeframe",
         default="15m",

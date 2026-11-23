@@ -22,6 +22,15 @@ from .models import SignalAction, to_dict
 from .research import ResearchService
 from .scanner import MarketScanner, ScanRequest
 from .storage import SignalStore
+from .venue import (
+    DEFAULT_EXCHANGE_ID,
+    DEFAULT_MARKET_TYPE,
+    DEFAULT_QUOTE_CURRENCIES,
+    KUCOIN_MAX_KLINE_LIMIT,
+    enforce_venue,
+    normalize_symbol,
+    normalize_symbols,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,20 +96,46 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_market_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exchange", default="kraken")
-    parser.add_argument("--market-type", default="spot")
-    parser.add_argument("--symbol", required=True)
+    parser.add_argument(
+        "--exchange",
+        default=DEFAULT_EXCHANGE_ID,
+        choices=(DEFAULT_EXCHANGE_ID,),
+    )
+    parser.add_argument(
+        "--market-type",
+        default=DEFAULT_MARKET_TYPE,
+        choices=(DEFAULT_MARKET_TYPE,),
+    )
+    parser.add_argument(
+        "--symbol",
+        required=True,
+        type=normalize_symbol,
+        help="KuCoin USDT perpetual in CCXT notation, e.g. BTC/USDT:USDT.",
+    )
 
 
 def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exchange", default="kraken")
-    parser.add_argument("--market-type", default="spot")
+    parser.add_argument(
+        "--exchange",
+        default=DEFAULT_EXCHANGE_ID,
+        choices=(DEFAULT_EXCHANGE_ID,),
+    )
+    parser.add_argument(
+        "--market-type",
+        default=DEFAULT_MARKET_TYPE,
+        choices=(DEFAULT_MARKET_TYPE,),
+    )
     parser.add_argument("--symbols", default="")
     parser.add_argument("--auto-universe", action="store_true")
-    parser.add_argument("--quote-currencies", default="USDT,USD")
+    parser.add_argument(
+        "--quote-currencies",
+        default=",".join(DEFAULT_QUOTE_CURRENCIES),
+    )
     parser.add_argument("--max-markets", type=int, default=20)
-    parser.add_argument("--minimum-quote-volume", type=float, default=0.0)
-    parser.add_argument("--maximum-spread-bps", type=float, default=75.0)
+    parser.add_argument(
+        "--minimum-quote-volume", type=float, default=1_000_000.0
+    )
+    parser.add_argument("--maximum-spread-bps", type=float, default=25.0)
     parser.add_argument("--execution-timeframe", default="15m")
     parser.add_argument("--context-timeframes", default="1h,4h")
     parser.add_argument("--limit", type=int, default=500)
@@ -131,13 +166,14 @@ def _items(value: str) -> tuple[str, ...]:
 
 
 def _scan_request(args: argparse.Namespace) -> ScanRequest:
-    symbols = _items(args.symbols)
+    exchange_id, market_type = enforce_venue(args.exchange, args.market_type)
+    symbols = normalize_symbols(_items(args.symbols))
     auto = bool(args.auto_universe)
     if not symbols and not auto:
         auto = True
     return ScanRequest(
-        exchange_id=args.exchange,
-        market_type=args.market_type,
+        exchange_id=exchange_id,
+        market_type=market_type,
         execution_timeframe=args.execution_timeframe,
         context_timeframes=_items(args.context_timeframes),
         symbols=symbols,
@@ -170,6 +206,7 @@ def _research_frames(
         end=args.end,
         output_dir=args.output_dir,
         strict_gaps=args.strict_gaps,
+        limit=KUCOIN_MAX_KLINE_LIMIT,
     )
 
 
@@ -245,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 end=args.end,
                 output_dir=args.output_dir,
                 strict_gaps=args.strict_gaps,
+                limit=KUCOIN_MAX_KLINE_LIMIT,
             )
             payload = {
                 "datasets": {
@@ -317,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 starting_equity=args.equity,
                 risk_percent=args.risk_percent,
                 maximum_notional_multiple=args.maximum_notional_multiple,
-                allow_short=args.market_type.lower() != "spot",
+                allow_short=True,
             )
             diagnostics = research.diagnostics(result)
             run_id = store.record_backtest(
@@ -360,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             risk_percent=args.risk_percent,
             maximum_notional_multiple=args.maximum_notional_multiple,
             monte_carlo_simulations=args.monte_carlo,
-            allow_short=args.market_type.lower() != "spot",
+            allow_short=True,
         )
         run_id = store.record_backtest(
             request={

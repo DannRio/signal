@@ -1,8 +1,19 @@
-# Professional Market Signal Machine
+# KuCoin Futures Signal Machine
 
-A standalone, exchange-agnostic research platform that classifies crypto markets, produces conditional long/short trade plans, scans liquid markets, downloads multi-year history, backtests the same decision engine, and records evidence in a persistent journal.
+A standalone KuCoin Futures research platform for USDT-margined perpetuals. It classifies markets, produces conditional long/short trade plans, scans liquid contracts, downloads multi-year history, backtests the same decision engine, and records evidence in a persistent journal. The internal market-data adapter remains modular, but every user-facing interface rejects non-KuCoin and spot requests.
 
 It is deliberately **signal-only**. It does not submit orders, store exchange credentials, or claim that a backtest proves a profitable edge.
+
+## Fixed venue scope
+
+- CCXT exchange id: `kucoinfutures`
+- Market type: `swap`
+- Supported settlement: `USDT`
+- Symbol format: `BTC/USDT:USDT` (the simpler `BTC/USDT` is normalized automatically)
+- KuCoin raw IDs such as `XBTUSDTM` are intentionally rejected at the user boundary
+- Public market data requires no API key; this project still does not place orders
+
+KuCoin's futures Kline endpoint returns at most 500 candles per request, so the downloader paginates at that limit. Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled.
 
 ## Major capabilities
 
@@ -63,9 +74,9 @@ http://127.0.0.1:8081/docs
 
 ```powershell
 signal-bot analyze `
-  --exchange kraken `
-  --market-type spot `
-  --symbol BTC/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbol BTC/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
   --equity 10000 `
@@ -80,9 +91,9 @@ Explicit symbols:
 
 ```powershell
 signal-machine scan `
-  --exchange kraken `
-  --market-type spot `
-  --symbols BTC/USDT,ETH/USDT,SOL/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbols BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h
 ```
@@ -91,10 +102,10 @@ Auto-discover a liquid universe:
 
 ```powershell
 signal-machine scan `
-  --exchange kraken `
-  --market-type spot `
+  --exchange kucoinfutures `
+  --market-type swap `
   --auto-universe `
-  --quote-currencies USD,USDT `
+  --quote-currencies USDT `
   --max-markets 20 `
   --minimum-quote-volume 5000000
 ```
@@ -105,9 +116,9 @@ Ticker spread is only a universe-quality screen. It is not an execution fill mod
 
 ```powershell
 signal-machine download `
-  --exchange kraken `
-  --market-type spot `
-  --symbol BTC/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbol BTC/USDT:USDT `
   --timeframes 15m,1h,4h `
   --start 2023-01-01 `
   --end 2026-11-01
@@ -119,9 +130,9 @@ Data is stored under `data/history/`, deduplicated, checksummed, and registered 
 
 ```powershell
 signal-machine backtest-live `
-  --exchange kraken `
-  --market-type spot `
-  --symbol BTC/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbol BTC/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
   --start 2023-01-01 `
@@ -130,7 +141,7 @@ signal-machine backtest-live `
   --risk-percent 0.5
 ```
 
-Spot research is long-only. Swap/futures research can evaluate both long and short setups.
+This project evaluates both long and short setups on KuCoin USDT-margined perpetual swaps.
 
 Backtest safeguards include:
 
@@ -146,9 +157,9 @@ Backtest safeguards include:
 
 ```powershell
 signal-machine validate `
-  --exchange kraken `
-  --market-type spot `
-  --symbol BTC/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbol BTC/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
   --start 2021-01-01 `
@@ -162,9 +173,9 @@ The gate checks trade count, expectancy, profit factor, drawdown, untouched chro
 
 ```powershell
 signal-machine monitor `
-  --exchange kraken `
-  --market-type spot `
-  --symbols BTC/USDT,ETH/USDT,SOL/USDT `
+  --exchange kucoinfutures `
+  --market-type swap `
+  --symbols BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
   --interval-seconds 60 `
@@ -175,7 +186,7 @@ Webhook delivery:
 
 ```powershell
 $env:SIGNAL_ALERT_WEBHOOK_URL = "https://your-endpoint.example/signal"
-signal-machine monitor --symbols BTC/USDT --alert-sinks console,webhook
+signal-machine monitor --symbols BTC/USDT:USDT --alert-sinks console,webhook
 ```
 
 ## Optional local API key
