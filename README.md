@@ -13,7 +13,7 @@ It is deliberately **signal-only**. It does not submit orders, store exchange cr
 - KuCoin raw IDs such as `XBTUSDTM` are intentionally rejected at the user boundary
 - Public market data requires no API key; this project still does not place orders
 
-KuCoin's futures Kline endpoint returns at most 500 candles per request, so the downloader paginates at that limit. Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled.
+KuCoin's futures Kline endpoint returns at most 500 candles per request, so the downloader paginates at that limit. Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled. The `maximum_notional_multiple` setting is only a modeled notional-to-equity cap; it does not change leverage on KuCoin, round to contract lots, or estimate liquidation.
 
 ## Major capabilities
 

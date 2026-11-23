@@ -20,7 +20,10 @@ from .service import (
 from .venue import (
     DEFAULT_EXCHANGE_ID,
     DEFAULT_MARKET_TYPE,
+    KUCOIN_MAX_KLINE_LIMIT,
     normalize_symbol,
+    validate_kline_limit,
+    validate_notional_multiple,
 )
 
 
@@ -104,8 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument(
         "--maximum-notional-multiple",
-        type=float,
+        type=validate_notional_multiple,
         default=None,
+        help="Position-notional cap as a multiple of equity; not exchange leverage.",
     )
     backtest.add_argument("--json", action="store_true")
     return parser
@@ -132,7 +136,11 @@ def _add_live_arguments(parser: argparse.ArgumentParser) -> None:
         default="1h,4h",
         help="Comma-separated context timeframes.",
     )
-    parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument(
+        "--limit",
+        type=validate_kline_limit,
+        default=KUCOIN_MAX_KLINE_LIMIT,
+    )
     parser.add_argument(
         "--maximum-staleness-bars",
         type=int,
@@ -154,8 +162,9 @@ def _add_live_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--maximum-notional-multiple",
-        type=float,
+        type=validate_notional_multiple,
         default=None,
+        help="Position-notional cap as a multiple of equity; not exchange leverage.",
     )
     parser.add_argument(
         "--include-open-candle",

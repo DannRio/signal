@@ -37,12 +37,12 @@ class MarketCandidate:
 @dataclass(frozen=True)
 class UniverseRequest:
     exchange_id: str
-    market_type: str = "spot"
+    market_type: str = "swap"
     symbols: tuple[str, ...] = ()
-    quote_currencies: tuple[str, ...] = ("USDT", "USD")
+    quote_currencies: tuple[str, ...] = ("USDT",)
     max_markets: int = 20
-    minimum_quote_volume: float = 0.0
-    maximum_spread_bps: float | None = 75.0
+    minimum_quote_volume: float = 1_000_000.0
+    maximum_spread_bps: float | None = 25.0
     include_leveraged_tokens: bool = False
 
     def validate(self) -> None:
@@ -180,15 +180,15 @@ class CCXTUniverseProvider:
 @dataclass(frozen=True)
 class ScanRequest:
     exchange_id: str
-    market_type: str = "spot"
+    market_type: str = "swap"
     execution_timeframe: str = "15m"
     context_timeframes: tuple[str, ...] = ("1h", "4h")
     symbols: tuple[str, ...] = ()
     auto_universe: bool = False
-    quote_currencies: tuple[str, ...] = ("USDT", "USD")
+    quote_currencies: tuple[str, ...] = ("USDT",)
     max_markets: int = 20
-    minimum_quote_volume: float = 0.0
-    maximum_spread_bps: float | None = 75.0
+    minimum_quote_volume: float = 1_000_000.0
+    maximum_spread_bps: float | None = 25.0
     limit: int = 500
     equity: float = 10_000.0
     risk_percent: float | None = None
@@ -199,8 +199,8 @@ class ScanRequest:
             raise ValueError("Provide symbols or enable auto_universe.")
         if self.symbols and self.auto_universe:
             raise ValueError("Use explicit symbols or auto_universe, not both.")
-        if self.limit <= 0 or self.limit > 5000:
-            raise ValueError("limit must be between 1 and 5000.")
+        if self.limit <= 0 or self.limit > 500:
+            raise ValueError("KuCoin Futures limit must be between 1 and 500.")
         if self.equity <= 0 or not math.isfinite(self.equity):
             raise ValueError("equity must be positive and finite.")
 

@@ -30,6 +30,8 @@ from .venue import (
     enforce_venue,
     normalize_symbol,
     normalize_symbols,
+    validate_kline_limit,
+    validate_notional_multiple,
 )
 
 
@@ -138,10 +140,19 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--maximum-spread-bps", type=float, default=25.0)
     parser.add_argument("--execution-timeframe", default="15m")
     parser.add_argument("--context-timeframes", default="1h,4h")
-    parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument(
+        "--limit",
+        type=validate_kline_limit,
+        default=KUCOIN_MAX_KLINE_LIMIT,
+    )
     parser.add_argument("--equity", type=float, default=10_000.0)
     parser.add_argument("--risk-percent", type=float, default=None)
-    parser.add_argument("--maximum-notional-multiple", type=float, default=None)
+    parser.add_argument(
+        "--maximum-notional-multiple",
+        type=validate_notional_multiple,
+        default=None,
+        help="Position-notional cap as a multiple of equity; does not set KuCoin leverage.",
+    )
 
 
 def _add_research_arguments(parser: argparse.ArgumentParser) -> None:
@@ -152,7 +163,12 @@ def _add_research_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--end", required=True)
     parser.add_argument("--equity", type=float, default=10_000.0)
     parser.add_argument("--risk-percent", type=float, default=None)
-    parser.add_argument("--maximum-notional-multiple", type=float, default=None)
+    parser.add_argument(
+        "--maximum-notional-multiple",
+        type=validate_notional_multiple,
+        default=None,
+        help="Position-notional cap as a multiple of equity; does not set KuCoin leverage.",
+    )
     parser.add_argument("--output-dir", default="data/history")
     parser.add_argument("--strict-gaps", action="store_true")
 

@@ -9,6 +9,8 @@ from signal_bot.venue import (
     VenueConfigurationError,
     enforce_venue,
     normalize_symbol,
+    validate_kline_limit,
+    validate_notional_multiple,
 )
 
 
@@ -42,3 +44,12 @@ def test_machine_scan_defaults_to_kucoin_futures_and_normalizes_symbols() -> Non
     assert request.quote_currencies == ("USDT",)
     assert request.minimum_quote_volume == 1_000_000.0
     assert request.maximum_spread_bps == 25.0
+
+
+def test_kucoin_request_and_notional_caps() -> None:
+    assert validate_kline_limit(500) == 500
+    assert validate_notional_multiple(5) == 5.0
+    with pytest.raises(VenueConfigurationError):
+        validate_kline_limit(501)
+    with pytest.raises(VenueConfigurationError):
+        validate_notional_multiple(5.01)

@@ -104,7 +104,7 @@ function renderTradePlan(signal) {
     ["Entry zone", `${price(plan.entry_low)} – ${price(plan.entry_high)}`], ["Reference", price(plan.reference_entry)],
     ["Stop loss", price(plan.stop_loss)], ["TP1", price(plan.take_profit_1)],
     ["TP2", price(plan.take_profit_2)], ["TP3", price(plan.take_profit_3)],
-    ["Position size", number(plan.position_size, 8)], ["Notional", number(plan.notional_value, 2)],
+    ["Base-asset quantity", number(plan.position_size, 8)], ["Notional", number(plan.notional_value, 2)],
     ["Planned risk", number(plan.actual_risk_amount, 2)], ["Est. round-trip cost", number(plan.estimated_round_trip_cost, 2)],
   ];
   $("tradePlan").innerHTML = entries.map(([label, value]) => `<div class="plan-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");

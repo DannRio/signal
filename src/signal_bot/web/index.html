@@ -47,9 +47,10 @@
         <label>Context timeframes<input id="liveContexts" value="1h,4h"></label>
         <label>Account equity<input id="liveEquity" type="number" value="10000" min="1"></label>
         <label>Risk per trade (%)<input id="liveRisk" type="number" value="0.5" min="0.01" step="0.05"></label>
-        <label>Max effective leverage<input id="liveLeverage" type="number" value="1" min="1" max="5" step="0.5"></label>
+        <label>Notional cap (× equity)<input id="liveLeverage" type="number" value="1" min="0.1" max="5" step="0.1"></label>
         <label>Chart candles<input id="liveChartBars" type="number" value="240" min="50" max="500"></label>
       </div>
+      <div class="message info"><strong>Sizing note:</strong> the notional cap limits modeled position value relative to equity. It does not set leverage on KuCoin, convert base quantity to contracts, or calculate liquidation price.</div>
 
       <div id="liveLoading" class="loading hidden">Fetching closed candles and evaluating the market…</div>
       <div id="liveError" class="message error hidden"></div>
@@ -130,10 +131,10 @@
         <label>End date<input id="btEnd" type="date"></label>
         <label>Starting equity<input id="btEquity" type="number" value="10000" min="1"></label>
         <label>Risk per trade (%)<input id="btRisk" type="number" value="0.5" min="0.01" step="0.05"></label>
-        <label>Max effective leverage<input id="btLeverage" type="number" value="1" min="1" max="5" step="0.5"></label>
+        <label>Notional cap (× equity)<input id="btLeverage" type="number" value="1" min="0.1" max="5" step="0.1"></label>
         <label>Monte Carlo paths<input id="btMonteCarlo" type="number" value="2000" min="100" max="100000"></label>
       </div>
-      <div class="message warning"><strong>Research rule:</strong> a positive backtest is not enough. The validation gate checks untouched test data, cost stress, trade count, drawdown, and Monte Carlo risk. Historical funding settlements are not yet applied to P&amp;L, so a pass remains incomplete for live futures use.</div>
+      <div class="message warning"><strong>Research rule:</strong> a positive backtest is not enough. The validation gate checks untouched test data, cost stress, trade count, drawdown, and Monte Carlo risk. Historical funding settlements, contract-lot rounding, maintenance margin, and liquidation price are not yet applied, so a pass remains incomplete for live futures use.</div>
       <div id="btLoading" class="loading hidden">Downloading historical candles and simulating trades. Large date ranges may take several minutes…</div>
       <div id="btError" class="message error hidden"></div>
       <div id="btResults" class="hidden">
