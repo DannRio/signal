@@ -1,4 +1,4 @@
-# Professional Signal Machine Architecture
+# KuCoin Futures Signal Machine Architecture
 
 ## Design boundary
 
@@ -7,7 +7,7 @@ The repository is a signal and research system. It deliberately contains no auth
 ## Data flow
 
 ```text
-CCXT public market metadata / OHLCV
+KuCoin Futures public market metadata / OHLCV
                 |
                 +--> liquid-universe filters
                 |
@@ -48,11 +48,13 @@ CCXT public market metadata / OHLCV
 - Fees and slippage are included.
 - An ambiguous candle that touches a stop and target resolves stop-first.
 - A gap through a stop receives the adverse opening fill.
-- Spot research suppresses short entries.
+- Every user-facing route enforces `kucoinfutures`, `swap`, and USDT settlement.
 - Chronological train, validation and test segments are evaluated independently.
 - Cost stress re-runs the engine with higher fees and slippage.
 - Monte Carlo bootstraps trade R-multiples to estimate sequence risk.
 
-## What remains a deployment decision
+## Futures-specific boundary
 
-Exchange eligibility, derivatives availability, taxes, legal requirements, production hosting, external authentication, and any future execution adapter are deliberately outside this repository's signal boundary.
+The current simulator uses futures OHLCV and permits long and short signals, but it does not yet apply historical funding settlements, KuCoin contract-lot rounding, maintenance-margin tiers, margin-mode behavior, or liquidation-price mechanics. A validation pass is therefore a research milestone, not authorization for live futures deployment.
+
+Exchange eligibility, derivatives availability, taxes, legal requirements, production hosting, external authentication, and any future execution adapter remain outside the repository's signal boundary.

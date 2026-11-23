@@ -223,7 +223,7 @@ def create_app(
     @router.post("/analyze")
     def analyze(payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            symbol = str(payload["symbol"])
+            symbol = normalize_symbol(str(payload["symbol"]))
             execution_timeframe = str(payload["execution_timeframe"])
             raw_frames = payload["frames"]
             if not isinstance(raw_frames, dict) or not raw_frames:
@@ -286,8 +286,8 @@ def create_app(
                     ),
                     equity=float(payload.get("equity", 10_000.0)),
                     risk_percent=_optional_float(payload, "risk_percent"),
-                    maximum_notional_multiple=_optional_float(
-                        payload, "maximum_notional_multiple"
+                    maximum_notional_multiple=validate_notional_multiple(
+                        payload.get("maximum_notional_multiple")
                     ),
                 )
             )
@@ -347,6 +347,7 @@ def create_app(
                 "execution_timeframe": execution,
                 "exchange_id": DEFAULT_EXCHANGE_ID,
                 "market_type": DEFAULT_MARKET_TYPE,
+                "symbol": normalize_symbol(str(payload["symbol"])),
             }
             run_id = active_store.record_backtest(
                 request=request_payload,
@@ -388,6 +389,7 @@ def create_app(
                 "execution_timeframe": execution,
                 "exchange_id": DEFAULT_EXCHANGE_ID,
                 "market_type": DEFAULT_MARKET_TYPE,
+                "symbol": normalize_symbol(str(payload["symbol"])),
             }
             run_id = active_store.record_backtest(
                 request=request_payload,

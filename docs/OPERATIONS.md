@@ -10,6 +10,16 @@ signal-machine dashboard
 
 Open `http://127.0.0.1:8081`.
 
+## Fixed venue scope
+
+- Exchange id: `kucoinfutures`
+- Market type: `swap`
+- Settlement: `USDT`
+- Unified symbol format: `BTC/USDT:USDT`
+- Public Kline request limit: 500 candles; the downloader paginates longer ranges
+
+The service rejects spot and non-KuCoin venue requests before market-data retrieval.
+
 ## Runtime files
 
 - SQLite journal: `data/signal_machine.db`

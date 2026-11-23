@@ -76,3 +76,33 @@ def test_api_reports_and_enforces_kucoin_futures_scope() -> None:
     )
     assert response.status_code == 422
     assert "restricted to KuCoin Futures" in response.json()["detail"]
+
+
+def test_scan_api_rejects_excessive_notional_cap_before_network() -> None:
+    client = TestClient(create_app(store=SignalStore(":memory:")))
+    response = client.post(
+        "/v1/scan",
+        json={
+            "exchange_id": DEFAULT_EXCHANGE_ID,
+            "market_type": DEFAULT_MARKET_TYPE,
+            "symbols": ["BTC/USDT:USDT"],
+            "maximum_notional_multiple": 5.01,
+        },
+    )
+    assert response.status_code == 422
+    assert "no more than 5.0" in response.json()["detail"]
+
+
+def test_frame_analysis_rejects_non_usdt_futures_symbol() -> None:
+    client = TestClient(create_app(store=SignalStore(":memory:")))
+    response = client.post(
+        "/v1/analyze",
+        json={
+            "symbol": "BTC/USD:BTC",
+            "execution_timeframe": "15m",
+            "frames": {"15m": []},
+        },
+    )
+    assert response.status_code == 422
+    assert "USDT-margined perpetual" in response.json()["detail"]
+
