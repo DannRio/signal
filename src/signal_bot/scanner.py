@@ -15,7 +15,6 @@ from .service import (
 )
 from .storage import SignalStore
 
-
 _LEVERAGED_TOKEN = re.compile(
     r"(?:UP|DOWN|BULL|BEAR|[235]L|[235]S)$",
     re.IGNORECASE,

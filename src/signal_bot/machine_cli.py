@@ -16,8 +16,8 @@ from .alerts import (
 )
 from .api import create_app
 from .config import RegimeBotConfig
-from .history import HistoryService
 from .engine import RegimeSignalEngine
+from .history import HistoryService
 from .models import SignalAction, to_dict
 from .research import ResearchService
 from .scanner import MarketScanner, ScanRequest
