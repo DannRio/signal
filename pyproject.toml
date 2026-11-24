@@ -31,7 +31,7 @@ dev = [
 [project.scripts]
 signal-bot = "signal_bot.cli:main"
 signal-api = "signal_bot.api:main"
-signal-machine = "signal_bot.machine_cli:main"
+signal-machine = "signal_bot.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
