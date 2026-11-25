@@ -40,3 +40,33 @@ jobs:
           signal-api --help
       - name: Dashboard package-data smoke test
         run: python -c "from importlib.resources import files; assert files('signal_bot').joinpath('web','index.html').is_file()"
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install application and browser tools
+        run: |
+          python -m pip install -e ".[dev]"
+          npm install --no-save --prefix "$RUNNER_TEMP/signal-browser" playwright@1.62.1
+          "$RUNNER_TEMP/signal-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Scanner browser flow
+        env:
+          NODE_PATH: ${{ runner.temp }}/signal-browser/node_modules
+          SIGNAL_DB_PATH: ":memory:"
+        run: |
+          python -m uvicorn signal_bot.api:create_app --factory --host 127.0.0.1 --port 8861 &
+          signal_server_pid=$!
+          trap 'kill "$signal_server_pid"' EXIT
+          node tests/browser_scanner.cjs
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-ui
+          path: artifacts/ui
+          if-no-files-found: ignore

@@ -255,6 +255,7 @@ class AlertDispatcher:
             "signal": to_dict(signal),
             **({"context": dict(context)} if context is not None else {}),
         }
+        valid_until: datetime | None = None
         expiry = payload.get("context", {}).get("valid_until")
         if expiry is not None:
             try:
@@ -270,7 +271,18 @@ class AlertDispatcher:
         json.dumps(payload, allow_nan=False)
         sent: list[str] = []
         failures: list[str] = []
-        for sink in remaining:
+        suppressed_reason: str | None = None
+        for index, sink in enumerate(remaining):
+            delivery_time = self._now_factory()
+            if delivery_time.tzinfo is None:
+                delivery_time = delivery_time.replace(tzinfo=UTC)
+            if valid_until is not None and delivery_time >= valid_until:
+                suppressed_reason = "Signal validity window expired before all sinks were delivered."
+                failures.extend(
+                    f"{pending.name}: Signal validity window has expired."
+                    for pending in remaining[index:]
+                )
+                break
             try:
                 sink.send(payload)
                 sent.append(sink.name)
@@ -281,6 +293,6 @@ class AlertDispatcher:
             except Exception as exc:  # isolate independent notification sinks.
                 failures.append(f"{sink.name}: {exc}")
         return AlertDispatchResult(
-            eligible=True, sent_to=tuple(sent), suppressed_reason=None,
+            eligible=True, sent_to=tuple(sent), suppressed_reason=suppressed_reason,
             failures=tuple(failures), already_delivered_to=already_sent,
         )

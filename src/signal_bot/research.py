@@ -20,7 +20,14 @@ from .models import (
     SignalAction,
     to_dict,
 )
-from .validation import prepare_ohlcv, timeframe_to_timedelta
+from .validation import (
+    REQUIRED_COLUMNS,
+    DataValidationError,
+    ensure_unique_timeframes,
+    prepare_ohlcv,
+    timeframe_to_timedelta,
+    validate_live_window,
+)
 
 
 @dataclass(frozen=True)
@@ -576,6 +583,28 @@ class ResearchService:
             ) else None,
             "> 0R in every tested cost scenario", available=bool(stress_rows),
         )
+        # A positive mean R can coexist with a realized monetary loss when
+        # trade sizes differ. Require profitable realized results as well.
+        for metric, check_name, unit in (
+            ("total_return_percent", "cost_stress_positive_return", "%"),
+            ("net_pnl", "cost_stress_positive_net_pnl", " quote-currency units"),
+        ):
+            raw_values = [
+                result.get(metric) if isinstance(result, Mapping) else None
+                for result in stress_results
+            ]
+            values = [_finite_number(value) for value in raw_values]
+            add(
+                check_name,
+                len(values) == len(stress_rows)
+                and bool(values)
+                and all(value is not None and value > 0 for value in values),
+                min(values) if values and all(value is not None for value in values) else None,
+                f"> 0{unit} in every tested cost scenario",
+                available=bool(stress_rows)
+                and len(raw_values) == len(stress_rows)
+                and all(value is not None for value in raw_values),
+            )
         stress_trades = [
             _finite_number(result.get("trades"))
             if isinstance(result, Mapping) else None for result in stress_results
@@ -683,10 +712,9 @@ class ResearchService:
             "maximum_notional_multiple": maximum_notional_multiple,
             "allow_short": allow_short,
         }
-        normalized = {
-            timeframe.strip().lower(): prepare_ohlcv(frame)
-            for timeframe, frame in frames.items()
-        }
+        normalized, data_quality = _prepare_research_frames(
+            frames, minimum_bars=self.config.minimum_bars
+        )
         base = self.backtest(frames=normalized, **options)
         windows = _chronological_windows(
             normalized, execution_timeframe, self.config.minimum_bars, 0.60, 0.20
@@ -711,6 +739,7 @@ class ResearchService:
             "oos": oos,
             "cost_stress": stress,
             "monte_carlo": monte,
+            "data_quality": data_quality,
             "provenance": _research_provenance(
                 normalized, self.config, self.thresholds, options
             ),
@@ -807,6 +836,71 @@ def _slice_frames(
     return {
         timeframe: frame.loc[frame["timestamp"] < end].reset_index(drop=True)
         for timeframe, frame in frames.items()
+    }
+
+
+def _prepare_research_frames(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    minimum_bars: int,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
+    """Reject unsafe historical windows before producing research evidence.
+
+    Historical datasets have no wall-clock freshness requirement. Their own
+    final candle close is the cutoff for the shared temporal validation.
+    Identical overlapping rows are allowed; conflicting duplicates are not.
+    """
+    ensure_unique_timeframes(dict(frames))
+    normalized: dict[str, pd.DataFrame] = {}
+    details: dict[str, Any] = {}
+    for raw_timeframe, raw in frames.items():
+        timeframe = raw_timeframe.strip().lower()
+        # prepare_ohlcv supplies standard type/schema/value validation, but it
+        # keeps the last duplicate. Inspect canonical duplicate values first
+        # so conflicting historical observations cannot disappear silently.
+        if not isinstance(raw, pd.DataFrame) or any(
+            column not in raw.columns for column in REQUIRED_COLUMNS
+        ):
+            prepare_ohlcv(raw)  # Raises the standard actionable schema error.
+        canonical = raw.loc[:, REQUIRED_COLUMNS].copy()
+        canonical["timestamp"] = pd.to_datetime(
+            canonical["timestamp"], utc=True, errors="coerce"
+        )
+        for column in REQUIRED_COLUMNS[1:]:
+            canonical[column] = pd.to_numeric(canonical[column], errors="coerce")
+        duplicates = canonical.loc[canonical["timestamp"].duplicated(keep=False)]
+        if not duplicates.empty:
+            differences = duplicates.groupby("timestamp", dropna=False)[
+                list(REQUIRED_COLUMNS[1:])
+            ].nunique(dropna=False)
+            if (differences > 1).any().any():
+                raise DataValidationError(
+                    f"{timeframe} history contains conflicting duplicate candle values.",
+                    code="conflicting_candle",
+                )
+        prepared = prepare_ohlcv(canonical)
+        duration = timeframe_to_timedelta(timeframe)
+        latest_close = prepared["timestamp"].max() + duration
+        validate_live_window(
+            prepared,
+            timeframe,
+            now=latest_close,
+            minimum_bars=minimum_bars,
+            maximum_staleness_bars=0,
+            closed_candles_only=True,
+        )
+        normalized[timeframe] = prepared
+        details[timeframe] = {
+            "rows": len(prepared),
+            "identical_duplicates_removed": len(canonical) - len(prepared),
+            "gaps": 0,
+            "aligned": True,
+        }
+    return normalized, {
+        "status": "passed",
+        "policy": "strict_historical_continuity_and_alignment",
+        "wall_clock_freshness_required": False,
+        "frames": details,
     }
 
 

@@ -150,6 +150,42 @@ def test_expired_event_is_not_delivered_or_retried():
     assert flaky.calls == 1
 
 
+def test_slow_first_sink_cannot_send_later_sinks_after_expiry():
+    clock = [datetime(2026, 1, 1, tzinfo=UTC)]
+
+    class SlowSink(CaptureSink):
+        name = "slow"
+
+        def send(self, payload):
+            super().send(payload)
+            clock[0] += timedelta(minutes=2)
+
+    first = SlowSink()
+    second = CaptureSink()
+    third = FlakySink(name="third", failures=0)
+    store = SignalStore(":memory:")
+    dispatcher = AlertDispatcher(
+        store, sinks=(first, second, third), now_factory=lambda: clock[0]
+    )
+    expiry = (clock[0] + timedelta(minutes=1)).isoformat()
+    result = dispatch(dispatcher, context={"valid_until": expiry})
+    assert result.sent_to == ("slow",)
+    assert result.suppressed_reason == "Signal validity window expired before all sinks were delivered."
+    assert len(result.failures) == 2
+    assert "capture" in result.failures[0]
+    assert "third" in result.failures[1]
+    assert not second.payloads
+    assert third.calls == 0
+    # The successful first send remains durably recorded despite expiry.
+    event_id = first.payloads[0]["event_id"]
+    assert store.alert_deliveries(event_id)["sink_ids"] == {"slow"}
+    retry = dispatch(dispatcher, context={"valid_until": (clock[0] + timedelta(hours=1)).isoformat()})
+    assert retry.sent_to == ()
+    assert retry.already_delivered_to == ("slow",)
+    assert retry.suppressed_reason == "Signal validity window has expired."
+    assert len(first.payloads) == 1
+
+
 @pytest.mark.parametrize("context", [
     {"valid_until": "invalid"}, {"valid_until": "2026-01-01T00:00:00"},
     {"contract_plan": {"contracts": float("nan")}},

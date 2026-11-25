@@ -15,7 +15,7 @@ Scope: signal-only KuCoin USDT perpetual scanning, monitoring, and the evidence 
 | High | Base-asset size was not a KuCoin contract quantity. | Apply current multiplier, lot, tick, amount and notional limits with Decimal arithmetic. Round contracts down and recompute risk/notional across the entry zone. Reject plans below market minima or with collapsed levels. |
 | High | A confirmed candle setup could be presented after price left its entry zone. | Require the current executable ask (long) or bid (short) inside the planned zone; otherwise show BLOCKED. |
 | High | Network outages and incomplete scans lacked a clear run-level contract. | Shared rate-limited client, bounded transient retries/timeouts, overlap protection, scan budget, explicit complete/degraded/failed/empty statuses and per-market failures. |
-| High | Zero profit factor was treated as infinity; missing evidence could still pass research readiness. | Zero remains zero. Mandatory named evidence covers validation/test trade count, PF, expectancy, drawdown, held-out cost stress and held-out bootstrap. Missing evidence cannot pass. |
+| High | Zero profit factor was treated as infinity; missing evidence could still pass research readiness. | Zero remains zero. Mandatory named evidence covers validation/test trade count, PF, expectancy, drawdown, realized stressed return/P&L, held-out cost stress and held-out bootstrap. Missing evidence cannot pass. |
 | High | Split evaluation discarded useful pre-split indicator warmup. | Include only causal preceding candles for warmup while prohibiting trades before each evaluation boundary; windows start flat. |
 | High | Alert cooldown alone allowed a repeated candle event later; partial delivery could resend successful channels. | Durable per-event/per-sink success receipts, failed-sink-only retry, context expiry, endpoint-specific identity and a webhook idempotency key. |
 | Medium | Reports lacked configuration/input identity and the UI hid screening reasons. | Configuration hash, dependency versions, per-frame hashes and timestamps, funding context, rejection details, rounded plans and expiry displayed/journaled. |
@@ -57,6 +57,8 @@ Net reward/risk values assume a full-position exit at each target after configur
 
 Default screening requirements include 200 full-sample trades, at least 50 trades in each validation and test window, positive expected R above the configured threshold, PF and drawdown limits, test-window stress of at least 2x configured costs, and a test-trade bootstrap. These are configurable screening rules, not statistically proven optimal cutoffs.
 
+Full validation rejects historical gaps, misalignment and conflicting duplicate values before simulation. Identical overlaps are deduplicated and counted; old aligned datasets have no wall-clock freshness requirement.
+
 Pre-split candles only warm indicators; evaluated windows start flat. Cost stress and Monte Carlo use the test window. The bootstrap is independent trade resampling and does not preserve serial dependence. Repeatedly selecting configurations after examining the test window consumes its holdout value. A passing status remains `PASS_FOR_PAPER_VALIDATION`, with `live_ready: false`.
 
 ## Remaining work before live futures reliance
@@ -71,7 +73,7 @@ Pre-split candles only warm indicators; evaluated windows start flat. Cost stres
 
 Hashes identify the configuration and normalized inputs used for a scan; the scan journal does not archive every complete live candle window. Historical downloads remain available for explicit dataset retention/research.
 
-Alert receipts prevent routine duplicate delivery across restart/cooldown and isolate failed sinks. They cannot guarantee exactly-once remote delivery if a process dies after the receiver accepts a notification but before its receipt is saved. Receivers that honor the supplied webhook idempotency key can reduce this remaining ambiguity.
+Alert receipts prevent routine duplicate delivery across restart/cooldown and isolate failed sinks. They cannot guarantee exactly-once remote delivery if a process dies after the receiver accepts a notification but before its receipt is saved. The monitor prints delivery failures to stderr, and expiry is rechecked before every sink. Receivers that honor the supplied webhook idempotency key can reduce this remaining ambiguity.
 
 ## Primary API references
 

@@ -1,0 +1,27 @@
+name: Public KuCoin data check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feature/scanner-reliability"]
+    paths:
+      - "scripts/check_public_scanner.py"
+      - ".github/workflows/public-market-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  market-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Verify public quotes and closed candles
+        run: python scripts/check_public_scanner.py

@@ -15,6 +15,7 @@ from signal_bot.research import (
     _compact_result,
     _research_provenance,
 )
+from signal_bot.validation import DataValidationError
 
 
 def evidence():
@@ -107,6 +108,53 @@ def test_stress_order_does_not_hide_a_losing_scenario():
     second = ResearchService().validation_gate(**inputs)
     assert first == second
     assert first["status"] == "FAIL"
+
+
+@pytest.mark.parametrize("metric,check_name", [
+    ("total_return_percent", "cost_stress_positive_return"),
+    ("net_pnl", "cost_stress_positive_net_pnl"),
+])
+@pytest.mark.parametrize("value", [-1.0, 0.0, float("nan"), float("inf"), float("-inf")])
+def test_positive_stressed_expectancy_cannot_hide_unprofitable_or_invalid_realized_results(metric, check_name, value):
+    inputs = evidence()
+    inputs["cost_stress"][0]["result"][metric] = value
+    assert inputs["cost_stress"][0]["result"]["expectancy_r"] > 0
+    gate = ResearchService().validation_gate(**inputs)
+    assert gate["status"] == "FAIL"
+    assert not check_by_name(gate, check_name)["passed"]
+    json.dumps(gate, allow_nan=False)
+
+
+@pytest.mark.parametrize("metric,check_name", [
+    ("total_return_percent", "cost_stress_positive_return"),
+    ("net_pnl", "cost_stress_positive_net_pnl"),
+])
+def test_stressed_realized_results_are_mandatory(metric, check_name):
+    inputs = evidence()
+    del inputs["cost_stress"][0]["result"][metric]
+    gate = ResearchService().validation_gate(**inputs)
+    assert gate["status"] == "INSUFFICIENT_EVIDENCE"
+    assert check_name in gate["missing_evidence"]
+
+
+def test_variable_size_losing_stress_scenario_cannot_pass_in_any_row_order():
+    inputs = evidence()
+    # Thirty +1R trades at 10 risk and thirty -0.5R trades at 100 risk:
+    # average R is +0.25, while realized P&L is -1200.
+    losing = {**inputs["cost_stress"][0], "result": {
+        **inputs["cost_stress"][0]["result"],
+        "expectancy_r": 0.25, "net_pnl": -1200.0, "total_return_percent": -12.0,
+    }}
+    passing = {**inputs["cost_stress"][0], "cost_multiplier": 1.0}
+    inputs["cost_stress"] = [losing, passing]
+    first = ResearchService().validation_gate(**inputs)
+    inputs["cost_stress"].reverse()
+    second = ResearchService().validation_gate(**inputs)
+    assert first == second
+    assert first["status"] == "FAIL"
+    assert check_by_name(first, "cost_stress_positive_expectancy")["passed"]
+    assert not check_by_name(first, "cost_stress_positive_return")["passed"]
+    assert not check_by_name(first, "cost_stress_positive_net_pnl")["passed"]
 
 
 def test_stress_must_include_a_higher_cost_scenario():
@@ -237,3 +285,63 @@ def test_provenance_changes_when_data_or_configuration_changes():
 def test_invalid_thresholds_rejected(thresholds):
     with pytest.raises(ValueError):
         ResearchService(thresholds=thresholds)
+
+
+@pytest.mark.parametrize("timeframe", ["15m", "1h"])
+@pytest.mark.parametrize("defect,code", [
+    ("gap", "candle_gap"),
+    ("misalignment", "misaligned_candle"),
+    ("conflicting_duplicate", "conflicting_candle"),
+])
+def test_full_validation_rejects_unsafe_history_before_any_backtest(monkeypatch, timeframe, defect, code):
+    frames = {"15m": frame()}
+    context = frame(count=400)
+    context["timestamp"] = pd.date_range("2024-01-01", periods=400, freq="1h", tz="UTC")
+    frames["1h"] = context
+    damaged = frames[timeframe].copy()
+    if defect == "gap":
+        damaged = damaged.drop(index=len(damaged) // 2).reset_index(drop=True)
+    elif defect == "misalignment":
+        damaged["timestamp"] += pd.Timedelta(minutes=1)
+    else:
+        duplicate = damaged.iloc[[100]].copy()
+        duplicate["volume"] += 1
+        damaged = pd.concat([damaged, duplicate], ignore_index=True)
+    frames[timeframe] = damaged
+    service = ResearchService()
+
+    def forbidden_backtest(**kwargs):
+        raise AssertionError("Unsafe data reached the backtester")
+
+    monkeypatch.setattr(service, "backtest", forbidden_backtest)
+    with pytest.raises(DataValidationError) as error:
+        service.full_validation(
+            symbol="TEST/USDT", frames=frames, execution_timeframe="15m",
+            monte_carlo_simulations=100,
+        )
+    assert error.value.code == code
+
+
+def test_full_validation_accepts_old_aligned_history_and_discloses_identical_overlap(monkeypatch):
+    candles = frame()
+    overlapping = pd.concat([candles, candles.iloc[[100, 500]]], ignore_index=True)
+    service = ResearchService()
+    counts = []
+
+    def fake_backtest(**kwargs):
+        counts.append(len(kwargs["frames"]["15m"]))
+        return sample_result()
+
+    monkeypatch.setattr(service, "backtest", fake_backtest)
+    validation = service.full_validation(
+        symbol="TEST/USDT", frames={"15m": overlapping}, execution_timeframe="15m",
+        monte_carlo_simulations=100,
+    )
+    quality = validation["data_quality"]
+    assert quality["status"] == "passed"
+    assert quality["wall_clock_freshness_required"] is False
+    assert quality["frames"]["15m"] == {
+        "rows": 1500, "identical_duplicates_removed": 2, "gaps": 0, "aligned": True,
+    }
+    assert counts[0] == 1500
+    assert validation["provenance"]["datasets"]["15m"]["rows"] == 1500

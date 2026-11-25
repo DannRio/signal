@@ -371,13 +371,15 @@ def main(argv: list[str] | None = None) -> int:
                     _print_scan(report)
                     for item in report.items:
                         if item.signal is not None and item.is_actionable():
-                            dispatcher.dispatch(
+                            delivery = dispatcher.dispatch(
                                 item.signal,
                                 exchange_id=request.exchange_id,
                                 market_type=request.market_type,
                                 context={"scan_run_id": report.run_id, "valid_until": item.valid_until,
                                          "contract_plan": item.contract_plan, "config_sha256": report.provenance["config_sha256"]},
                             )
+                            for failure in delivery.failures:
+                                print(f"alert delivery failed for {item.candidate.symbol}: {failure}", file=sys.stderr)
                 except Exception as exc:
                     print(f"monitor cycle failed: {exc}", file=sys.stderr)
                 iteration += 1
