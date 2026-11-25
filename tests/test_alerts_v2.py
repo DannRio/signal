@@ -41,7 +41,7 @@ def confirmed_signal() -> MarketSignal:
     )
 
 
-def test_dispatcher_sends_once_then_applies_cooldown() -> None:
+def test_dispatcher_sends_once_then_deduplicates_event() -> None:
     store = SignalStore(":memory:")
     sink = CaptureSink()
     dispatcher = AlertDispatcher(
@@ -57,5 +57,5 @@ def test_dispatcher_sends_once_then_applies_cooldown() -> None:
     )
     assert first.sent_to == ("capture",)
     assert second.sent_to == ()
-    assert second.suppressed_reason == "Alert cooldown is active."
+    assert second.suppressed_reason == "Signal already delivered to all configured sinks."
     assert len(sink.payloads) == 1

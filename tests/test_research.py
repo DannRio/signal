@@ -8,7 +8,7 @@ from signal_bot.models import (
     PositionSide,
     SetupType,
 )
-from signal_bot.research import ResearchService
+from signal_bot.research import ResearchService, _compact_result
 
 
 def sample_result(trades=250, expectancy=0.2) -> BacktestResult:
@@ -77,16 +77,18 @@ def test_diagnostics_and_monte_carlo_are_deterministic() -> None:
 def test_validation_gate_requires_multiple_evidence_layers() -> None:
     service = ResearchService()
     result = sample_result()
+    held_out = _compact_result(sample_result(trades=60))
     oos = {
-        "test": {
-            "result": {
-                "expectancy_r": 0.1,
-                "total_return_percent": 2.0,
-            }
-        }
+        "validation": {"result": held_out},
+        "test": {"result": held_out},
     }
-    stress = [{"result": {"expectancy_r": 0.08}}]
-    monte = {"probability_ending_below_start": 0.1}
+    stress = [{"scope": "test", "cost_multiplier": 3.0, "result": held_out}]
+    monte = {
+        "scope": "test",
+        "simulations": 200,
+        "trades_per_path": 60,
+        "probability_ending_below_start": 0.1,
+    }
     gate = service.validation_gate(
         base_result=result,
         oos=oos,
@@ -94,3 +96,5 @@ def test_validation_gate_requires_multiple_evidence_layers() -> None:
         monte_carlo=monte,
     )
     assert gate["status"] == "PASS_FOR_PAPER_VALIDATION"
+    assert gate["live_ready"] is False
+    assert not gate["missing_evidence"]

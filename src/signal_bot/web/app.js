@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { lastSnapshot: null, autoTimer: null };
+const state = { lastSnapshot: null, lastScanReport: null, autoTimer: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -132,27 +132,67 @@ function scannerPayload() {
     execution_timeframe: $("scanExecution").value.trim(), context_timeframes: $("scanContexts").value.trim(),
     equity: Number($("liveEquity").value), risk_percent: Number($("liveRisk").value),
     maximum_notional_multiple: Number($("liveLeverage").value), limit: 500,
+    maximum_quote_age_seconds: Number($("scanQuoteAge").value), scan_timeout_seconds: Number($("scanTimeout").value),
   };
 }
 async function runScan() {
   clearError("scanError"); setLoading("scanLoading", true); $("scanResults").classList.add("hidden");
+  $("scanButton").disabled = true;
   try {
-    const report = await api("/v1/scan", { method: "POST", body: JSON.stringify(scannerPayload()) });
-    $("scanSummary").textContent = `${report.analyzed_markets} analyzed · ${report.failed_markets} failed`;
-    $("scanRows").innerHTML = report.items.map((item) => {
-      if (!item.signal) return `<tr><td>${item.rank}</td><td>${escapeHtml(item.candidate.symbol)}</td><td colspan="8" class="negative-text">${escapeHtml(item.error)}</td></tr>`;
-      const signal = item.signal;
-      return `<tr><td>${item.rank}</td><td><strong>${escapeHtml(item.candidate.symbol)}</strong></td>
-        <td class="${actionClass(signal.action)}">${escapeHtml(signal.action.replaceAll("_", " ").toUpperCase())}</td>
-        <td>${escapeHtml(signal.regime.replaceAll("_", " "))}</td><td>${percent(signal.confidence, 1)}</td>
-        <td>${percent(signal.consensus * 100, 0)}</td><td>${number(signal.score, 1)}</td>
-        <td>${number(item.candidate.quote_volume, 0)}</td><td>${item.candidate.spread_bps == null ? "—" : number(item.candidate.spread_bps, 1)}</td>
-        <td>${price(signal.trigger_price)}</td></tr>`;
-    }).join("");
+    state.lastScanReport = await api("/v1/scan", { method: "POST", body: JSON.stringify(scannerPayload()) });
+    renderScanReport(state.lastScanReport);
     $("scanResults").classList.remove("hidden");
   } catch (error) { showError("scanError", error); }
-  finally { setLoading("scanLoading", false); }
+  finally { setLoading("scanLoading", false); $("scanButton").disabled = false; }
 }
+function scanItemIsCurrent(item, now = Date.now()) {
+  return Boolean(item.actionable && item.valid_until && new Date(item.valid_until).getTime() > now);
+}
+function renderScanReport(report) {
+  const currentCount = report.items.filter((item) => scanItemIsCurrent(item)).length;
+  $("scanSummary").textContent = `${report.status.toUpperCase()} · ${currentCount} qualified now · ${report.analyzed_markets} analyzed · ${report.blocked_markets} blocked · ${report.failed_markets} failed · ${report.rejected_markets} rejected · ${number(report.duration_seconds, 1)}s`;
+  $("scanAudit").textContent = `Snapshot ${new Date(report.started_at).toLocaleString()} · ${report.considered_markets} considered · ${report.excluded_by_limit} excluded by market limit · Run ${report.run_id || "not journaled"}`;
+  $("scanMessages").innerHTML = (report.errors || []).map((error) => `<div class="message error"><strong>${escapeHtml(error.code)}</strong>: ${escapeHtml(error.message)}</div>`).join("") || (report.status === "empty" ? '<div class="message info">No markets passed the filters. Review the rejection reasons below.</div>' : "");
+  $("scanRows").innerHTML = report.items.map((item) => {
+    const candidate = item.candidate;
+    const signal = item.signal;
+    if (!signal || item.status === "failed") return `<tr><td>${item.rank}</td><td>${escapeHtml(candidate.symbol)}</td><td colspan="8" class="negative-text">FAILED [${escapeHtml(item.error_code)}] ${escapeHtml(item.error)}</td></tr>`;
+    const current = scanItemIsCurrent(item);
+    const expired = item.actionable && !current;
+    const label = item.status === "blocked" ? "BLOCKED" : expired ? "EXPIRED" : current ? `QUALIFIED ${signal.action.toUpperCase()}` : signal.action.replaceAll("_", " ").toUpperCase();
+    const plan = item.contract_plan;
+    const age = candidate.quote_timestamp ? Math.max(0, (Date.now() - new Date(candidate.quote_timestamp).getTime()) / 1000) : null;
+    const details = [
+      ...(item.blocked_reasons || []),
+      ...(expired ? ["Quote or decision validity expired. Run a new scan."] : []),
+      `Candle decision: ${new Date(signal.generated_at).toLocaleString()}`,
+      `Quote age: ${number(age, 1)}s; bid ${price(candidate.bid)}, ask ${price(candidate.ask)}`,
+      `Volume source: ${candidate.volume_source}; observed ${candidate.metadata_observed_at ? new Date(candidate.metadata_observed_at).toLocaleString() : "unknown"}`,
+      `Funding: ${candidate.funding_rate == null ? "unavailable" : percent(candidate.funding_rate * 100, 5)}; interval ${number(candidate.funding_interval_hours, 1)}h; next ${candidate.next_funding_at ? new Date(candidate.next_funding_at).toLocaleString() : "unavailable"}`,
+      `Mark ${price(candidate.mark_price)}; index ${price(candidate.index_price)}`,
+      `Valid until: ${item.valid_until ? new Date(item.valid_until).toLocaleString() : "unavailable"}`,
+    ];
+    if (plan) details.push(`Rounded entry ${price(plan.entry_low)}–${price(plan.entry_high)}, stop ${price(plan.stop_loss)}, TP ${price(plan.take_profit_1)} / ${price(plan.take_profit_2)} / ${price(plan.take_profit_3)}`, `Quantity ${number(plan.contracts, 8)} contracts = ${number(plan.base_quantity, 8)} ${candidate.base}; notional ≤ ${number(plan.notional_value, 2)} USDT; modeled risk ≤ ${number(plan.actual_risk_amount, 2)} USDT`, `Net reward/risk at TP1 / TP2 / TP3: ${number(plan.net_reward_to_risk_1, 2)} / ${number(plan.net_reward_to_risk_2, 2)} / ${number(plan.net_reward_to_risk_3, 2)} (full exit at each target; funding excluded)`);
+    for (const [timeframe, data] of Object.entries(item.data_quality || {})) details.push(`${timeframe}: ${data.rows} bars, closed through ${new Date(data.last_close).toLocaleString()}, SHA-256 ${data.sha256}`);
+    return `<tr><td>${item.rank}</td><td><strong>${escapeHtml(candidate.symbol)}</strong></td>
+      <td class="${current ? actionClass(signal.action) : ""}">${escapeHtml(label)}</td>
+      <td>${escapeHtml(signal.regime.replaceAll("_", " "))}</td><td>${percent(signal.confidence, 1)}</td>
+      <td>${percent(signal.consensus * 100, 0)}</td><td>${number(candidate.quote_volume, 0)}</td>
+      <td>${number(candidate.spread_bps, 1)}</td><td>${plan ? number(plan.contracts, 8) : "—"}</td>
+      <td><details><summary>Diagnostics</summary><div class="scan-detail">${details.map((value) => `<p>${escapeHtml(value)}</p>`).join("")}</div></details></td></tr>`;
+  }).join("") || '<tr><td colspan="10">No analyzed markets in this scan.</td></tr>';
+  $("scanRejections").innerHTML = (report.rejections || []).map((item) => `<tr><td>${escapeHtml(item.symbol)}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="3">No markets rejected.</td></tr>';
+}
+function updateScanExpiry() {
+  const report = state.lastScanReport;
+  if (!report) return;
+  const expired = report.items.filter((item) => item.actionable && !scanItemIsCurrent(item)).length;
+  if (expired !== (state.expiredScanItems || 0)) {
+    state.expiredScanItems = expired;
+    renderScanReport(report);
+  }
+}
+setInterval(updateScanExpiry, 1000);
 
 function backtestPayload() {
   return {
@@ -187,11 +227,11 @@ function renderValidationResponse(response) {
   renderGate(validation.gate, validation);
 }
 function renderBacktestCore(result, diagnostics) {
-  const pf = result.profit_factor == null ? "∞" : number(result.profit_factor, 2);
+  const pf = result.profit_factor == null ? (result.trades > 0 && result.net_pnl > 0 ? "∞" : "—") : number(result.profit_factor, 2);
   const metrics = [
     ["Total return", percent(result.total_return_percent, 2), result.total_return_percent >= 0],
     ["Net P&L", number(result.net_pnl, 2), result.net_pnl >= 0], ["Trades", number(result.trades, 0), null],
-    ["Win rate", percent(result.win_rate_percent, 1), null], ["Profit factor", pf, (result.profit_factor ?? 99) >= 1],
+    ["Win rate", percent(result.win_rate_percent, 1), null], ["Profit factor", pf, (result.profit_factor == null ? result.trades > 0 && result.net_pnl > 0 : result.profit_factor >= 1)],
     ["Expectancy", `${number(result.expectancy_r, 3)}R`, result.expectancy_r >= 0],
     ["Max drawdown", percent(result.max_drawdown_percent, 2), result.max_drawdown_percent <= 25],
     ["Ending equity", number(result.ending_equity, 2), result.ending_equity >= result.starting_equity],
@@ -212,9 +252,9 @@ function renderBacktestCore(result, diagnostics) {
 }
 function renderGate(gate, validation) {
   const statusClass = gate.status.startsWith("PASS") ? "positive-text" : gate.status === "FAIL" ? "negative-text" : "";
-  const checks = gate.checks.map((check) => `<div class="gate-check"><span class="${check.passed ? "gate-pass" : "gate-fail"}">${check.passed ? "✓" : "✕"}</span><span>${escapeHtml(check.name.replaceAll("_", " "))}<small class="muted"><br>${escapeHtml(check.requirement)}</small></span><strong>${escapeHtml(number(check.value, 3))}</strong></div>`).join("");
+  const checks = gate.checks.map((check) => `<div class="gate-check"><span class="${check.passed ? "gate-pass" : "gate-fail"}">${check.passed ? "✓" : "✕"}</span><span>${escapeHtml(check.name.replaceAll("_", " "))}<small class="muted"><br>${escapeHtml(check.requirement)}</small></span><strong>${escapeHtml(check.available === false ? "Missing" : typeof check.value === "boolean" ? (check.value ? "Yes" : "No") : number(check.value, 3))}</strong></div>`).join("");
   const mc = validation.monte_carlo || {};
-  $("validationGate").innerHTML = `<h3 class="${statusClass}">${escapeHtml(gate.status.replaceAll("_", " "))}</h3>${checks}<p class="muted">Monte Carlo chance of ending below start: ${mc.probability_ending_below_start == null ? "—" : percent(mc.probability_ending_below_start * 100, 1)}</p>`;
+  $("validationGate").innerHTML = `<h3 class="${statusClass}">${escapeHtml(gate.status.replaceAll("_", " "))}</h3>${checks}<p class="muted">${escapeHtml((gate.limitations || []).join(" "))}</p><p class="muted">Monte Carlo chance of ending below start: ${mc.probability_ending_below_start == null ? "—" : percent(mc.probability_ending_below_start * 100, 1)}</p>`;
 }
 
 async function refreshJournal() {

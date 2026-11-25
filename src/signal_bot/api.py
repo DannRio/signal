@@ -15,7 +15,7 @@ from .engine import RegimeSignalEngine
 from .history import HistoryRequest, HistoryService
 from .models import SignalAction, to_dict
 from .research import ResearchService
-from .scanner import MarketScanner, ScanRequest
+from .scanner import MarketScanner, ScanInProgressError, ScanRequest
 from .service import LiveMarketRequest, RegimeBotService, parse_timeframes
 from .storage import SignalStore
 from .venue import (
@@ -70,7 +70,7 @@ def create_app(
 
     app = FastAPI(
         title="KuCoin Futures Signal Machine",
-        version="2.0.0",
+        version="2.1.0",
         description=(
             "KuCoin USDT-perpetual, signal-only market-regime analysis, "
             "scanning, historical research, and validation platform. Confidence is a "
@@ -122,7 +122,7 @@ def create_app(
         return {
             "status": "ok",
             "engine": "signal_bot",
-            "version": "2.0.0",
+            "version": "2.1.0",
             "minimum_bars": engine.config.minimum_bars,
             "database": active_store.path,
             "api_key_required": bool(configured_api_key),
@@ -284,6 +284,9 @@ def create_app(
                     maximum_spread_bps=_optional_float(
                         payload, "maximum_spread_bps", default=25.0
                     ),
+                    maximum_quote_age_seconds=float(payload.get("maximum_quote_age_seconds", 30.0)),
+                    maximum_staleness_bars=int(payload.get("maximum_staleness_bars", 1)),
+                    scan_timeout_seconds=float(payload.get("scan_timeout_seconds", 180.0)),
                     limit=validate_kline_limit(
                         payload.get("limit", KUCOIN_MAX_KLINE_LIMIT)
                     ),
@@ -295,6 +298,8 @@ def create_app(
                 )
             )
             return report.to_dict()
+        except ScanInProgressError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -408,6 +413,27 @@ def create_app(
             }
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/scanner/status")
+    def scanner_status() -> dict[str, Any]:
+        rows = active_store.recent_scans(limit=1)
+        if not rows:
+            return {"status": "idle", "last_scan": None}
+        latest = rows[0]
+        result = latest["result"]
+        return {
+            "status": result.get("status", "unknown"),
+            "last_scan": {
+                "run_id": latest["run_id"],
+                "generated_at": result.get("generated_at"),
+                "duration_seconds": result.get("duration_seconds"),
+                "analyzed_markets": result.get("analyzed_markets"),
+                "failed_markets": result.get("failed_markets"),
+                "blocked_markets": result.get("blocked_markets"),
+                "actionable_at_scan_time": result.get("actionable_markets"),
+                "errors": result.get("errors", []),
+            },
+        }
 
     @router.get("/journal/signals")
     def journal_signals(

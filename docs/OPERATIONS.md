@@ -3,7 +3,7 @@
 ## Local start
 
 ```powershell
-cd C:\Trading\Signal
+cd C:\Trading\Signal\signal
 .\.venv\Scripts\Activate.ps1
 signal-machine dashboard
 ```
@@ -77,3 +77,15 @@ python -m pytest -q
 ```
 
 To roll back, switch to the previous known-good commit, reinstall the editable package, and rerun tests. Runtime data is backward-independent from source control, but always back up SQLite before schema-affecting upgrades.
+
+## Scanner run health
+
+`GET /v1/scanner/status` reports idle or the most recent persisted scan outcome. `GET /v1/journal/scans` includes full run diagnostics. The public `/health` endpoint reports the API process, not live exchange availability.
+
+A scan is `complete`, `degraded`, `failed`, or `empty`. Per-market records distinguish analyzed, blocked and failed results. Inspect `errors` and `error_code` before treating an empty opportunity list as a market conclusion. `actionable_at_scan_time` is historical; check each scan item's `valid_until` before relying on it.
+
+The scan-wide candle cutoff is frozen. Quotes are refreshed before qualification. One scanner instance admits one run at a time; concurrent API requests receive 409. Time budgets are cooperative between markets, with bounded network attempts. Avoid running multiple independent monitors against the same IP without a shared request budget.
+
+After this upgrade, alert receipt storage is added automatically and existing journal tables are retained. Stop the application and back up the database before updating. To roll back code, check out the prior commit and reinstall; do not delete the additive receipt table or the database.
+
+See [SCANNER_REVIEW.md](SCANNER_REVIEW.md) for defaults and exact qualification/expiry semantics.

@@ -22,6 +22,10 @@ _TIMEFRAME_PATTERN = re.compile(
 class DataValidationError(ValueError):
     """Raised when OHLCV data is unsafe to analyze."""
 
+    def __init__(self, message: str, *, code: str = "invalid_ohlcv") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 def timeframe_to_timedelta(timeframe: str) -> pd.Timedelta:
     match = _TIMEFRAME_PATTERN.fullmatch(timeframe.strip().lower())
@@ -117,10 +121,15 @@ def normalize_ccxt_ohlcv(candles: list[list[float]]) -> pd.DataFrame:
     """Normalize CCXT's six-field OHLCV rows into validated columns."""
     if not candles:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
-    frame = pd.DataFrame(candles, columns=REQUIRED_COLUMNS)
-    frame["timestamp"] = pd.to_datetime(
-        frame["timestamp"], unit="ms", utc=True
-    )
+    try:
+        frame = pd.DataFrame(candles, columns=REQUIRED_COLUMNS)
+        frame["timestamp"] = pd.to_datetime(
+            frame["timestamp"], unit="ms", utc=True, errors="coerce"
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DataValidationError(
+            "Exchange returned malformed OHLCV rows.", code="malformed_candle"
+        ) from exc
     return prepare_ohlcv(frame)
 
 
@@ -140,10 +149,83 @@ def drop_incomplete_candle(
         current_time = current_time.tz_convert("UTC")
 
     duration = timeframe_to_timedelta(timeframe)
-    latest_open = frame.iloc[-1]["timestamp"]
-    if latest_open + duration > current_time:
-        return frame.iloc[:-1].reset_index(drop=True)
-    return frame
+    # More than one row can be newer than a scan's frozen cutoff. Removing
+    # only the last row would allow future/open candles into that snapshot.
+    return frame.loc[
+        frame["timestamp"] + duration <= current_time
+    ].reset_index(drop=True)
+
+
+def validate_live_window(
+    data: pd.DataFrame,
+    timeframe: str,
+    *,
+    now: datetime | pd.Timestamp,
+    minimum_bars: int,
+    maximum_staleness_bars: int,
+    closed_candles_only: bool = True,
+) -> None:
+    """Fail closed on broken live windows; never fabricate missing bars.
+
+    Price/volume validation is performed by ``normalize_ccxt_ohlcv`` before
+    this temporal check. Weekly exchange bars are anchored to Monday UTC.
+    """
+    if data.empty:
+        raise DataValidationError(
+            f"No usable {'closed ' if closed_candles_only else ''}{timeframe} candles.",
+            code="empty_window",
+        )
+    if len(data) < minimum_bars:
+        raise DataValidationError(
+            f"Only {len(data)} usable {timeframe} candles; at least "
+            f"{minimum_bars} are required.",
+            code="insufficient_history",
+        )
+    current_time = pd.Timestamp(now)
+    current_time = (
+        current_time.tz_localize("UTC")
+        if current_time.tzinfo is None
+        else current_time.tz_convert("UTC")
+    )
+    if pd.isna(current_time):
+        raise ValueError("The live-data cutoff must be a valid timestamp.")
+    duration = timeframe_to_timedelta(timeframe)
+    timestamps = data["timestamp"]
+    if not timestamps.is_unique or not timestamps.is_monotonic_increasing:
+        raise DataValidationError(
+            f"{timeframe} candles must have unique chronological timestamps.",
+            code="duplicate_candle",
+        )
+    origin_ns = (
+        pd.Timestamp("1970-01-05T00:00:00Z").value
+        if timeframe.strip().lower().endswith("w")
+        else 0
+    )
+    if any((timestamp.value - origin_ns) % duration.value for timestamp in timestamps):
+        raise DataValidationError(
+            f"{timeframe} candle timestamps are not aligned to timeframe boundaries.",
+            code="misaligned_candle",
+        )
+    gaps = timestamps.diff().iloc[1:] != duration
+    if gaps.any():
+        raise DataValidationError(
+            f"{timeframe} window has {int(gaps.sum())} timestamp gap(s); "
+            "missing candles are not synthesized.",
+            code="candle_gap",
+        )
+    latest_open = timestamps.iloc[-1]
+    latest_close = latest_open + duration
+    if latest_open > current_time or (closed_candles_only and latest_close > current_time):
+        raise DataValidationError(
+            f"{timeframe} window contains a candle beyond its analysis cutoff.",
+            code="future_candle",
+        )
+    if maximum_staleness_bars and current_time - latest_close > duration * maximum_staleness_bars:
+        raise DataValidationError(
+            f"Latest {timeframe} candle is stale by more than "
+            f"{maximum_staleness_bars} bars.",
+            code="stale_candles",
+        )
 
 
 def ensure_unique_timeframes(frames: dict[str, pd.DataFrame]) -> None:

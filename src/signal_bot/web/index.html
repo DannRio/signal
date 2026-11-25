@@ -60,7 +60,7 @@
           <article class="metric-card"><span>Regime</span><strong id="regimeValue">—</strong></article>
           <article class="metric-card"><span>Decision</span><strong id="actionValue">—</strong></article>
           <article class="metric-card"><span>Score</span><strong id="scoreValue">—</strong></article>
-          <article class="metric-card"><span>Confidence</span><strong id="confidenceValue">—</strong></article>
+          <article class="metric-card"><span>Rule alignment</span><strong id="confidenceValue">—</strong></article>
           <article class="metric-card"><span>Timeframe agreement</span><strong id="consensusValue">—</strong></article>
           <article class="metric-card"><span>Decision candle</span><strong id="candleValue">—</strong></article>
         </div>
@@ -86,14 +86,14 @@
 
         <article class="content-card">
           <h3>Timeframe diagnostics</h3>
-          <div class="table-wrap"><table><thead><tr><th>Timeframe</th><th>Regime</th><th>Score</th><th>Confidence</th><th>ADX</th><th>RSI</th><th>ATR %</th><th>Volume ratio</th></tr></thead><tbody id="timeframeRows"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Timeframe</th><th>Regime</th><th>Score</th><th>Alignment</th><th>ADX</th><th>RSI</th><th>ATR %</th><th>Volume ratio</th></tr></thead><tbody id="timeframeRows"></tbody></table></div>
         </article>
       </div>
     </section>
 
     <section id="tab-scanner" class="panel tab-panel">
       <div class="section-heading">
-        <div><h2>Ranked market scanner</h2><p>Scans explicit symbols or discovers liquid markets, then ranks confirmed and forming setups.</p></div>
+        <div><h2>Ranked market scanner</h2><p>Checks eligibility, fresh quotes, continuous closed candles, entry validity, and KuCoin contract sizing before qualifying a setup.</p></div>
         <button id="scanButton" class="primary">Run scan</button>
       </div>
       <div class="form-grid compact">
@@ -105,14 +105,19 @@
         <label>Max markets<input id="scanMax" type="number" value="15" min="1" max="100"></label>
         <label>Minimum quote volume<input id="scanVolume" type="number" value="1000000" min="0"></label>
         <label>Maximum spread (bps)<input id="scanSpread" type="number" value="25" min="1"></label>
+        <label>Max quote age (seconds)<input id="scanQuoteAge" type="number" value="30" min="1" max="300"></label>
+        <label>Scan budget (seconds)<input id="scanTimeout" type="number" value="180" min="10" max="900"></label>
         <label>Entry timeframe<input id="scanExecution" value="15m"></label>
         <label>Context timeframes<input id="scanContexts" value="1h,4h"></label>
       </div>
+      <div class="message info">Rule alignment is not a win probability. Qualified setups expire with their quote or decision candle. Risk estimates include configured fees and slippage; funding, liquidation, and combined portfolio exposure require separate review.</div>
       <div id="scanLoading" class="loading hidden">Scanning markets sequentially to respect exchange rate limits…</div>
       <div id="scanError" class="message error hidden"></div>
       <article id="scanResults" class="content-card hidden">
         <div class="section-heading small"><h3>Ranked opportunities</h3><span id="scanSummary" class="muted"></span></div>
-        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Market</th><th>Decision</th><th>Regime</th><th>Confidence</th><th>Consensus</th><th>Score</th><th>Volume</th><th>Spread</th><th>Trigger</th></tr></thead><tbody id="scanRows"></tbody></table></div>
+        <p id="scanAudit" class="muted"></p><div id="scanMessages"></div>
+        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Market</th><th>Status</th><th>Regime</th><th>Alignment</th><th>Agreement</th><th>24h USDT turnover</th><th>Spread bps</th><th>Contracts</th><th>Details</th></tr></thead><tbody id="scanRows"></tbody></table></div>
+        <details class="scan-rejections"><summary>Rejected markets and reasons</summary><div class="table-wrap"><table><thead><tr><th>Market</th><th>Code</th><th>Reason</th></tr></thead><tbody id="scanRejections"></tbody></table></div></details>
       </article>
     </section>
 

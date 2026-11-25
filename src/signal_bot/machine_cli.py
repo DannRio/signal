@@ -139,6 +139,9 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         "--minimum-quote-volume", type=float, default=1_000_000.0
     )
     parser.add_argument("--maximum-spread-bps", type=float, default=25.0)
+    parser.add_argument("--maximum-quote-age-seconds", type=float, default=30.0)
+    parser.add_argument("--maximum-staleness-bars", type=int, default=1, choices=(1, 2, 3))
+    parser.add_argument("--scan-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--execution-timeframe", default="15m")
     parser.add_argument("--context-timeframes", default="1h,4h")
     parser.add_argument(
@@ -201,6 +204,9 @@ def _scan_request(args: argparse.Namespace) -> ScanRequest:
         max_markets=args.max_markets,
         minimum_quote_volume=args.minimum_quote_volume,
         maximum_spread_bps=args.maximum_spread_bps,
+        maximum_quote_age_seconds=args.maximum_quote_age_seconds,
+        maximum_staleness_bars=args.maximum_staleness_bars,
+        scan_timeout_seconds=args.scan_timeout_seconds,
         limit=args.limit,
         equity=args.equity,
         risk_percent=args.risk_percent,
@@ -236,19 +242,33 @@ def _print_json(value: Any) -> None:
 def _print_scan(report) -> None:
     print(
         f"{report.exchange_id} {report.market_type} | "
-        f"{report.analyzed_markets} analyzed | {report.failed_markets} failed"
+        f"{report.status.upper()} | {report.analyzed_markets} analyzed | "
+        f"{report.actionable_markets} qualified | {report.blocked_markets} blocked | "
+        f"{report.rejected_markets} rejected | {report.failed_markets} failed | "
+        f"{report.duration_seconds:.1f}s"
     )
     for item in report.items:
         if item.signal is None:
             print(f"{item.rank:>2}. {item.candidate.symbol:<18} ERROR {item.error}")
             continue
         signal = item.signal
+        if item.status == "blocked":
+            print(f"{item.rank:>2}. {item.candidate.symbol:<18} BLOCKED [{item.error_code}]: " + "; ".join(item.blocked_reasons))
+            continue
         print(
             f"{item.rank:>2}. {item.candidate.symbol:<18} "
             f"{signal.action.value.upper():<12} "
-            f"{signal.regime.value:<16} confidence {signal.confidence:>5.1f}% "
+            f"{signal.regime.value:<16} alignment {signal.confidence:>5.1f}% "
             f"consensus {signal.consensus * 100:>3.0f}% score {signal.score:>6.1f}"
         )
+
+        if item.contract_plan is not None:
+            plan = item.contract_plan
+            print(f"    {plan['contracts']:g} contracts | risk {plan['actual_risk_amount']:.2f} USDT | quote valid until {item.valid_until}")
+    for rejection in report.rejections:
+        print(f"  REJECT {rejection.symbol}: [{rejection.code}] {rejection.reason}")
+    for error in report.errors:
+        print(f"  ERROR [{error['code']}]: {error['message']}")
 
 
 def _alert_sinks(value: str):
@@ -328,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "scan":
                 report = scanner.scan(request)
                 _print_json(report.to_dict()) if args.json else _print_scan(report)
-                return 0
+                return 2 if report.status in {"failed", "degraded"} else 0
 
             if args.interval_seconds < 60:
                 raise ValueError("interval-seconds must be at least 60.")
@@ -350,12 +370,16 @@ def main(argv: list[str] | None = None) -> int:
                     report = scanner.scan(request)
                     _print_scan(report)
                     for item in report.items:
-                        if item.signal is not None:
-                            dispatcher.dispatch(
+                        if item.signal is not None and item.is_actionable():
+                            delivery = dispatcher.dispatch(
                                 item.signal,
                                 exchange_id=request.exchange_id,
                                 market_type=request.market_type,
+                                context={"scan_run_id": report.run_id, "valid_until": item.valid_until,
+                                         "contract_plan": item.contract_plan, "config_sha256": report.provenance["config_sha256"]},
                             )
+                            for failure in delivery.failures:
+                                print(f"alert delivery failed for {item.candidate.symbol}: {failure}", file=sys.stderr)
                 except Exception as exc:
                     print(f"monitor cycle failed: {exc}", file=sys.stderr)
                 iteration += 1
