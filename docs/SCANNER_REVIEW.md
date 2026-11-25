@@ -82,3 +82,14 @@ Alert receipts prevent routine duplicate delivery across restart/cooldown and is
 - [KuCoin Futures all symbols](https://www.kucoin.com/docs-new/rest/futures-trading/market-data/get-all-symbols): contract status, multiplier, lot/tick, turnover and funding fields.
 - [CCXT manual](https://docs.ccxt.com/docs/manual): exchange-instance limiter, contract counts, OHLCV handling.
 - [CCXT KuCoin implementation](https://github.com/ccxt/ccxt/blob/master/python/ccxt/kucoin.py): separate contract metadata and BBO ticker methods.
+
+## Verification evidence
+
+On implementation commit `b15393889ceec2c272bcf48cae86ad2292a2ffdf`:
+
+- [Full CI](https://github.com/DannRio/signal/actions/runs/45541031150): 238 tests passed on Windows/Ubuntu with Python 3.11/3.12, plus Ruff, compilation, CLI help and package-asset checks.
+- The same run passed real Chromium desktop/mobile flows for qualified, blocked and failed rows, diagnostic expansion, expired qualifications, HTML escaping and zero page errors. Those UI cases use deterministic fixtures, not live trading results.
+- [Public KuCoin integration](https://github.com/DannRio/signal/actions/runs/45541031381): one BTC/USDT:USDT scan completed in 4.682 seconds, with 500 validated closed candles for each of 15m/1h/4h, current BBO, measured turnover, and no errors/rejections. Freshness checks stayed enabled. The observed WATCH_SHORT was a temporary market classification, not a recommendation to enter a position.
+- No order execution, real alert delivery, multi-year performance evaluation or sustained deployment test was performed.
+
+For later read-only integration checks, run `python scripts/check_public_scanner.py` or the manual **Public KuCoin data check** Actions workflow. Public-data availability is intentionally separate from deterministic CI.

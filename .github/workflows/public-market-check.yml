@@ -2,11 +2,6 @@ name: Public KuCoin data check
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["feature/scanner-reliability"]
-    paths:
-      - "scripts/check_public_scanner.py"
-      - ".github/workflows/public-market-check.yml"
 
 permissions:
   contents: read

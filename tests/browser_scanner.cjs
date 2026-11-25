@@ -27,6 +27,8 @@ const fs=require('node:fs/promises');
  assert.equal(await page.locator('#scanRejections img').count(),0);
  await page.locator('#scanRows summary').first().click();
  assert.match(await page.locator('#scanRows .scan-detail').first().innerText(),/47 contracts/);
+ const desktopTable=await page.locator('#scanResults .table-wrap').first().evaluate(el=>({width:el.clientWidth,scroll:el.scrollWidth}));
+ assert.ok(desktopTable.scroll<=desktopTable.width+1,JSON.stringify(desktopTable));
  await page.screenshot({path:path.join(artifactDir,'scanner-desktop.png'),fullPage:true});
  await page.evaluate(()=>{state.lastScanReport.items[0].valid_until=new Date(Date.now()-1).toISOString();updateScanExpiry();});
  assert.match(await page.locator('#scanRows').textContent(),/EXPIRED/);
