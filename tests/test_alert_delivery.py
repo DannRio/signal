@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from test_alerts_v2 import CaptureSink, confirmed_signal
 
 from signal_bot.alerts import (
     AlertDispatcher,
@@ -15,7 +16,6 @@ from signal_bot.alerts import (
     WebhookAlertSink,
 )
 from signal_bot.storage import SignalStore
-from test_alerts_v2 import CaptureSink, confirmed_signal
 
 
 class FlakySink(CaptureSink):

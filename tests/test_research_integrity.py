@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 import pytest
+from test_research import sample_result
 
 from signal_bot.research import (
     ResearchService,
@@ -14,7 +15,6 @@ from signal_bot.research import (
     _compact_result,
     _research_provenance,
 )
-from test_research import sample_result
 
 
 def evidence():

@@ -14,7 +14,11 @@ from signal_bot.service import (
     MarketDataUnavailableError,
     RegimeBotService,
 )
-from signal_bot.validation import DataValidationError, drop_incomplete_candle, normalize_ccxt_ohlcv
+from signal_bot.validation import (
+    DataValidationError,
+    drop_incomplete_candle,
+    normalize_ccxt_ohlcv,
+)
 
 NOW = pd.Timestamp("2026-01-01T00:01:00Z")
 DURATION_MS = 15 * 60 * 1000

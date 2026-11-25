@@ -27,6 +27,7 @@ jobs:
       - name: Lint
         run: python -m ruff check src tests
       - name: Test
+        if: ${{ !cancelled() }}
         run: python -m pytest -q
       - name: Dashboard JavaScript syntax
         run: node --check src/signal_bot/web/app.js
