@@ -15,7 +15,7 @@ It is deliberately **signal-only**. It does not submit orders, store exchange cr
 
 KuCoin's futures Kline endpoint returns at most 500 candles per request, and a live CCXT request may return fewer rows than requested. The live adapter therefore paginates forward from a bounded timestamp, removes overlapping candles, and retains the latest requested closed-candle window. A public KuCoin Futures verification assembled 500 unique, ordered candles for each of 15m, 1h, and 4h and produced all three timeframe states.
 
-Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled. The `maximum_notional_multiple` setting is only a modeled notional-to-equity cap; it does not change leverage on KuCoin, round to contract lots, or estimate liquidation.
+Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled. The `maximum_notional_multiple` setting is only a modeled notional-to-equity cap; it does not change leverage on KuCoin, estimate liquidation. The scanner now produces a separate contract-rounded plan; historical backtests and the standalone Live Signal model retain base-quantity sizing.
 
 ## Major capabilities
 
@@ -24,21 +24,24 @@ Default backtests retain a conservative 10 bps fee estimate per side and 5 bps s
 - Breakout and pullback-continuation confirmation
 - Entry zone, structural/ATR stop, TP1/TP2/TP3, break-even and trailing rules
 - Risk-based sizing with fee and slippage estimates
-- Liquid-market discovery and ranked multi-symbol scanning
+- Uniform eligibility/liquidity screening for manual and automatic symbol lists
+- Fresh BBO quotes, continuous closed-candle checks and expiring scan qualifications
+- KuCoin contract/tick rounding with preserved risk and notional budgets
+- Ranked multi-symbol scanning with rejection reasons and partial-failure diagnostics
 - Paginated, resumable CCXT historical downloads with checksums and gap detection
 - Closed-candle, next-bar, no-look-ahead backtesting
 - Chronological train/validation/test evaluation
 - Cost-stress and Monte Carlo robustness analysis
 - A research gate that distinguishes working software from evidence suitable for paper validation
 - Persistent SQLite journal for signals, scans, datasets, alerts, and backtests
-- Console, JSONL, and generic webhook alerts with persistent cooldowns
+- Console, JSONL, and generic webhook alerts with persistent event/sink deduplication and cooldowns
 - Local browser dashboard with price chart, signal explanation, scanner, backtest charts, trade ledger, and journal
-- FastAPI endpoints, Docker support, and automated CI on Python 3.11 and 3.12
+- FastAPI endpoints, Docker support, and automated Windows/Ubuntu CI on Python 3.11 and 3.12
 
 ## Windows PowerShell setup
 
 ```powershell
-cd C:\Trading\Signal
+cd C:\Trading\Signal\signal
 
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -61,8 +64,8 @@ http://127.0.0.1:8081
 
 The dashboard has four sections:
 
-1. **Live Signal** — regime, decision, confidence, timeframe alignment, price chart, entry, stop and targets.
-2. **Market Scanner** — ranked confirmed and forming setups across explicit symbols or an auto-discovered liquid universe.
+1. **Live Signal** — regime, decision, rule alignment, timeframe alignment, price chart, entry, stop and targets.
+2. **Market Scanner** — qualified/blocked/failed outcomes, uniform universe filters, contract quantities, funding context, data diagnostics, and expiry across explicit symbols or a liquid universe.
 3. **Backtest & Validation** — automatic historical download, equity curve, yearly results, trade ledger, OOS testing, cost stress and Monte Carlo analysis.
 4. **Journal** — persistent signals, datasets and research runs.
 
@@ -112,7 +115,9 @@ signal-machine scan `
   --minimum-quote-volume 5000000
 ```
 
-Ticker spread is only a universe-quality screen. It is not an execution fill model.
+Both modes enforce the same safety checks. Defaults include a 30-second quote age limit, 25-bps spread limit and 180-second scan budget. You can set `--maximum-quote-age-seconds`, `--maximum-spread-bps` and `--scan-timeout-seconds`. A qualified setup expires when its quote TTL or decision candle expires. The monitor alerts only currently qualified setups. Degraded/failed scans return CLI exit code 2.
+
+Ticker spread is a quality screen, not a fill model. See [the scanner review and implemented safeguards](docs/SCANNER_REVIEW.md) for the audit, defaults and remaining live-futures limitations.
 
 ## Download historical data
 

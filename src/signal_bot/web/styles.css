@@ -173,3 +173,9 @@ footer { color: var(--muted); text-align: center; padding: 25px 15px 45px; font-
   .button-group button { flex: 1; }
   .span-2 { grid-column: span 1; }
 }
+
+.scan-detail { width: min(34rem, 70vw); white-space: normal; overflow-wrap: anywhere; }
+.scan-detail p { margin: .5rem 0; line-height: 1.45; }
+.scan-rejections { margin-top: 1rem; }
+summary { cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }

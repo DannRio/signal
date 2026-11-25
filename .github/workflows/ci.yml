@@ -10,10 +10,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +28,8 @@ jobs:
         run: python -m ruff check src tests
       - name: Test
         run: python -m pytest -q
+      - name: Dashboard JavaScript syntax
+        run: node --check src/signal_bot/web/app.js
       - name: Compile
         run: python -m compileall -q src tests
       - name: CLI smoke tests

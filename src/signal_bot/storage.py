@@ -159,6 +159,16 @@ class SignalStore:
                 payload_json TEXT NOT NULL
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS alert_deliveries (
+                event_key TEXT NOT NULL,
+                sink_id TEXT NOT NULL,
+                alert_key TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (event_key, sink_id)
+            )
+            """,
         )
         with self._connection() as connection:
             connection.execute("BEGIN")
@@ -469,6 +479,68 @@ class SignalStore:
                 """,
                 (alert_key, timestamp.isoformat(), _dump(payload)),
             )
+
+    def alert_deliveries(self, event_key: str) -> dict[str, Any]:
+        """Return persistent successful sinks and the original event payload."""
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT sink_id, payload_json FROM alert_deliveries
+                WHERE event_key = ? ORDER BY sent_at, sink_id
+                """,
+                (event_key,),
+            ).fetchall()
+        return {
+            "sink_ids": {row["sink_id"] for row in rows},
+            "payload": json.loads(rows[0]["payload_json"]) if rows else None,
+        }
+
+    def mark_alert_delivery(
+        self,
+        event_key: str,
+        sink_id: str,
+        alert_key: str,
+        payload: dict[str, Any],
+        *,
+        sent_at: datetime | None = None,
+    ) -> None:
+        """Persist one successful delivery and start cooldown once per event.
+
+        Receipts are written after a sink succeeds. They prevent routine replay,
+        but cannot make an external side effect and SQLite commit atomic.
+        """
+        timestamp = sent_at or _utc_now()
+        serialized = _dump(payload)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                previous = connection.execute(
+                    "SELECT 1 FROM alert_deliveries WHERE event_key = ? LIMIT 1",
+                    (event_key,),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO alert_deliveries (
+                        event_key, sink_id, alert_key, sent_at, payload_json
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (event_key, sink_id, alert_key, timestamp.isoformat(), serialized),
+                )
+                if previous is None:
+                    connection.execute(
+                        """
+                        INSERT INTO alert_ledger (alert_key, last_sent_at, payload_json)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(alert_key) DO UPDATE SET
+                            last_sent_at = excluded.last_sent_at,
+                            payload_json = excluded.payload_json
+                        """,
+                        (alert_key, timestamp.isoformat(), serialized),
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
 
     def close(self) -> None:
         with self._lock:
