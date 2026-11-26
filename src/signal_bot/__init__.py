@@ -25,7 +25,7 @@ from .research import ResearchService, ValidationThresholds
 from .scanner import MarketScanner, ScanReport, ScanRequest
 from .storage import SignalStore
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 
 __all__ = [
     "BacktestResult",

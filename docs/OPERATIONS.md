@@ -10,6 +10,20 @@ signal-machine dashboard
 
 Open `http://127.0.0.1:8081`.
 
+## Chart display
+
+Version 2.1.1 fixes price and equity charts that appeared squeezed against an edge,
+stretched vertically, or clipped after analysis or resizing. Results are now made
+visible before measuring the canvas. CSS controls a stable chart height while the
+canvas bitmap scales separately for the display's pixel density. Both charts redraw
+when their container changes size, their tab reopens, or display density changes.
+
+After upgrading, restart the dashboard and refresh the browser with `Ctrl+F5`.
+The health badge should report `v2.1.1`. The price chart stays 430 CSS pixels high
+and the equity chart 330; changing Windows display scaling should not increase
+those layout heights. Browser regression checks exercise repeated analyses,
+backtests, resizing, and tab changes at 100%, 125%, and 200% pixel density.
+
 ## Fixed venue scope
 
 - Exchange id: `kucoinfutures`

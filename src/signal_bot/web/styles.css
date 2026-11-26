@@ -130,6 +130,8 @@ button.secondary { color: var(--text); background: #1a2d49; border: 1px solid #3
 .legend span::before { content: ""; display: inline-block; width: 16px; height: 2px; margin: 0 6px 3px 0; background: currentColor; }
 .ema-fast { color: var(--blue-2); }.ema-mid { color: var(--amber); }.ema-slow { color: var(--purple); }
 canvas { width: 100%; display: block; border-radius: 8px; }
+#priceChart { height: 430px; }
+#equityChart { height: 330px; }
 .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .plan-grid { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 10px; }
 .plan-item { background: #0e1a2c; border: 1px solid #203652; padding: 11px; border-radius: 9px; }
