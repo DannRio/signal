@@ -70,7 +70,7 @@ def create_app(
 
     app = FastAPI(
         title="KuCoin Futures Signal Machine",
-        version="2.1.0",
+        version="2.1.1",
         description=(
             "KuCoin USDT-perpetual, signal-only market-regime analysis, "
             "scanning, historical research, and validation platform. Confidence is a "
@@ -122,7 +122,7 @@ def create_app(
         return {
             "status": "ok",
             "engine": "signal_bot",
-            "version": "2.1.0",
+            "version": "2.1.1",
             "minimum_bars": engine.config.minimum_bars,
             "database": active_store.path,
             "api_key_required": bool(configured_api_key),

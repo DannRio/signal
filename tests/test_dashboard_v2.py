@@ -19,5 +19,5 @@ def test_dashboard_and_assets_are_served() -> None:
 def test_health_reports_signal_only_boundary() -> None:
     client = TestClient(create_app(store=SignalStore(":memory:")))
     payload = client.get("/health").json()
-    assert payload["version"] == "2.1.0"
+    assert payload["version"] == "2.1.1"
     assert payload["execution_enabled"] is False

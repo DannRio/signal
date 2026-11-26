@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { lastSnapshot: null, lastScanReport: null, autoTimer: null };
+const state = { lastSnapshot: null, lastScanReport: null, lastEquityCurve: null, autoTimer: null, chartFrame: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -74,8 +74,8 @@ async function analyzeMarket() {
   try {
     const snapshot = await api("/v1/market-snapshot", { method: "POST", body: JSON.stringify(livePayload()) });
     state.lastSnapshot = snapshot;
-    renderLive(snapshot);
     $("liveResults").classList.remove("hidden");
+    renderLive(snapshot);
   } catch (error) { showError("liveError", error); }
   finally { setLoading("liveLoading", false); }
 }
@@ -209,8 +209,8 @@ async function runBacktest(fullValidation = false) {
   try {
     const endpoint = fullValidation ? "/v1/research/validate" : "/v1/backtest/live";
     const response = await api(endpoint, { method: "POST", body: JSON.stringify(backtestPayload()) });
-    if (fullValidation) renderValidationResponse(response); else renderBacktestResponse(response);
     $("btResults").classList.remove("hidden");
+    if (fullValidation) renderValidationResponse(response); else renderBacktestResponse(response);
   } catch (error) { showError("btError", error); }
   finally { setLoading("btLoading", false); }
 }
@@ -237,7 +237,8 @@ function renderBacktestCore(result, diagnostics) {
     ["Ending equity", number(result.ending_equity, 2), result.ending_equity >= result.starting_equity],
   ];
   $("btMetrics").innerHTML = metrics.map(([label, value, positive]) => `<article class="metric-card ${positive === null ? "" : positive ? "positive" : "negative"}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
-  drawLineChart($("equityChart"), result.equity_curve || [], "equity");
+  state.lastEquityCurve = result.equity_curve || [];
+  drawLineChart($("equityChart"), state.lastEquityCurve);
   const q = diagnostics.trade_quality || {};
   const quality = [
     ["Average win", `${number(q.average_win_r, 3)}R`], ["Average loss", `${number(q.average_loss_r, 3)}R`],
@@ -276,16 +277,23 @@ async function refreshJournal() {
 }
 
 function sizeCanvas(canvas) {
-  const ratio = Math.max(1, window.devicePixelRatio || 1);
   const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(300, Math.floor(rect.width * ratio));
-  canvas.height = Math.floor(Number(canvas.getAttribute("height") || 300) * ratio);
+  // Hidden panels have no drawable area. Keep the bitmap until the panel opens.
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const ratio = window.devicePixelRatio || 1;
+  // CSS controls layout; width/height attributes control only the backing bitmap.
+  // Never use a previously scaled attribute as the next logical chart height.
+  canvas.width = Math.max(1, Math.round(rect.width * ratio));
+  canvas.height = Math.max(1, Math.round(rect.height * ratio));
   const context = canvas.getContext("2d");
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  return { ctx: context, width: rect.width, height: Number(canvas.getAttribute("height") || 300) };
+  if (!context) return null;
+  context.setTransform(canvas.width / rect.width, 0, 0, canvas.height / rect.height, 0, 0);
+  return { ctx: context, width: rect.width, height: rect.height };
 }
 function drawCandles(canvas, candles, plan) {
-  const { ctx, width, height } = sizeCanvas(canvas);
+  const viewport = sizeCanvas(canvas);
+  if (!viewport) return;
+  const { ctx, width, height } = viewport;
   ctx.clearRect(0, 0, width, height); ctx.fillStyle = "#071323"; ctx.fillRect(0, 0, width, height);
   if (!candles.length) return;
   const pad = { left: 12, right: 72, top: 16, bottom: 28 };
@@ -304,11 +312,34 @@ function drawCandles(canvas, candles, plan) {
 function drawSeries(ctx, candles, key, x, y, color) { ctx.strokeStyle = color; ctx.lineWidth = 1.35; ctx.beginPath(); let started = false; candles.forEach((c, i) => { if (c[key] == null) return; if (!started) { ctx.moveTo(x(i), y(c[key])); started = true; } else ctx.lineTo(x(i), y(c[key])); }); ctx.stroke(); }
 function drawLevel(ctx, yy, width, pad, color, label) { ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(width - pad.right, yy); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = color; ctx.fillText(label, pad.left + 4, yy - 4); }
 function drawLineChart(canvas, points) {
-  const { ctx, width, height } = sizeCanvas(canvas); ctx.clearRect(0, 0, width, height); ctx.fillStyle = "#071323"; ctx.fillRect(0, 0, width, height);
+  const viewport = sizeCanvas(canvas);
+  if (!viewport) return;
+  const { ctx, width, height } = viewport; ctx.clearRect(0, 0, width, height); ctx.fillStyle = "#071323"; ctx.fillRect(0, 0, width, height);
   if (!points.length) return; const values = points.map((p) => Number(p[1])); let min = Math.min(...values), max = Math.max(...values); const margin = (max - min || 1) * .08; min -= margin; max += margin;
   const pad = { left: 12, right: 72, top: 16, bottom: 26 }; const x = (i) => pad.left + i * ((width - pad.left - pad.right) / Math.max(1, points.length - 1)); const y = (v) => pad.top + (max - v) / (max - min) * (height - pad.top - pad.bottom);
   ctx.strokeStyle = "rgba(255,255,255,.07)"; ctx.fillStyle = "#8395af"; ctx.font = "11px system-ui"; for (let i = 0; i <= 4; i++) { const v = min + (max - min) * i / 4; const yy = y(v); ctx.beginPath(); ctx.moveTo(pad.left, yy); ctx.lineTo(width - pad.right, yy); ctx.stroke(); ctx.fillText(number(v, 0), width - pad.right + 7, yy + 4); }
   const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom); gradient.addColorStop(0, "rgba(78,161,255,.32)"); gradient.addColorStop(1, "rgba(78,161,255,0)"); ctx.beginPath(); ctx.moveTo(x(0), height - pad.bottom); points.forEach((p, i) => ctx.lineTo(x(i), y(Number(p[1])))); ctx.lineTo(x(points.length - 1), height - pad.bottom); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill(); ctx.beginPath(); points.forEach((p, i) => i ? ctx.lineTo(x(i), y(Number(p[1]))) : ctx.moveTo(x(i), y(Number(p[1])))); ctx.strokeStyle = "#4ea1ff"; ctx.lineWidth = 2; ctx.stroke();
+}
+
+function scheduleChartRedraw() {
+  if (state.chartFrame !== null) return;
+  state.chartFrame = window.requestAnimationFrame(() => {
+    state.chartFrame = null;
+    if (state.lastSnapshot) drawCandles($("priceChart"), state.lastSnapshot.candles || [], state.lastSnapshot.signal.entry_plan);
+    if (state.lastEquityCurve !== null) drawLineChart($("equityChart"), state.lastEquityCurve);
+  });
+}
+function observeCharts() {
+  const observer = new ResizeObserver(scheduleChartRedraw);
+  observer.observe($("priceChart"));
+  observer.observe($("equityChart"));
+  window.addEventListener("resize", scheduleChartRedraw);
+  // Moving between monitors can change pixel density without changing CSS size.
+  function watchPixelRatio() {
+    window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+      .addEventListener("change", () => { watchPixelRatio(); scheduleChartRedraw(); }, { once: true });
+  }
+  watchPixelRatio();
 }
 
 function setupTabs() {
@@ -316,6 +347,7 @@ function setupTabs() {
     document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
     button.classList.add("active"); $(`tab-${button.dataset.tab}`).classList.add("active");
+    scheduleChartRedraw();
     if (button.dataset.tab === "journal") refreshJournal();
   }));
 }
@@ -324,13 +356,12 @@ function setDates() {
   $("btEnd").value = end.toISOString().slice(0, 10); $("btStart").value = start.toISOString().slice(0, 10);
 }
 function bootstrap() {
-  setupTabs(); setDates(); checkHealth();
+  setupTabs(); observeCharts(); setDates(); checkHealth();
   $("apiKey").value = localStorage.getItem("signalApiKey") || "";
   $("apiKey").addEventListener("change", () => localStorage.setItem("signalApiKey", $("apiKey").value));
   $("analyzeButton").addEventListener("click", analyzeMarket); $("scanButton").addEventListener("click", runScan);
   $("backtestButton").addEventListener("click", () => runBacktest(false)); $("validateButton").addEventListener("click", () => runBacktest(true));
   $("refreshJournalButton").addEventListener("click", refreshJournal);
   $("scanMode").addEventListener("change", () => { $("scanSymbols").disabled = $("scanMode").value === "auto"; });
-  window.addEventListener("resize", () => { if (state.lastSnapshot) drawCandles($("priceChart"), state.lastSnapshot.candles || [], state.lastSnapshot.signal.entry_plan); });
 }
 document.addEventListener("DOMContentLoaded", bootstrap);
