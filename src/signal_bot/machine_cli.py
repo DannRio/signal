@@ -5,6 +5,9 @@ import json
 import os
 import sys
 import time
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from .alerts import (
@@ -17,8 +20,13 @@ from .alerts import (
 from .api import create_app
 from .config import RegimeBotConfig
 from .engine import RegimeSignalEngine
+from .futures_research import parse_futures_inputs
 from .history import HistoryService
 from .models import SignalAction, to_dict
+from .observability import next_monitor_delay, summarize_scans
+from .paper import PaperPolicy, PaperTracker
+from .paper_monitor import observe_paper_scan
+from .replay import ReplayStore, replay_snapshot
 from .research import ResearchService
 from .scanner import MarketScanner, ScanRequest
 from .storage import SignalStore
@@ -65,6 +73,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scan_arguments(scan)
     scan.add_argument("--json", action="store_true")
 
+    metrics = subparsers.add_parser("metrics", help="Summarize measured scans by matching workload and cache state.")
+    metrics.add_argument("--limit", type=int, default=100)
+    snapshots = subparsers.add_parser("snapshots", help="List retained reproducible decisions.")
+    snapshots.add_argument("--limit", type=int, default=50)
+    replay = subparsers.add_parser("replay", help="Verify a frozen decision offline, or export its complete inputs.")
+    replay.add_argument("snapshot_id", nargs="?")
+    replay.add_argument("--file", default="", help="Replay a previously exported JSON snapshot.")
+    replay.add_argument("--export", default="", help="Export complete snapshot JSON to this path.")
+    paper_status = subparsers.add_parser("paper-status", help="Show paper observations and unresolved exposure.")
+    paper_status.add_argument("--account", default="default")
+    benchmark = subparsers.add_parser("benchmark", help="Measure uncached and cached scans; public data only, no alerts or orders.")
+    _add_scan_arguments(benchmark)
+    benchmark.add_argument("--repetitions", type=int, default=2)
+
     backtest = subparsers.add_parser(
         "backtest-live",
         help="Download historical data and run a cost-aware backtest.",
@@ -85,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Continuously scan, journal, and alert on confirmed signals.",
     )
     _add_scan_arguments(monitor)
-    monitor.add_argument("--interval-seconds", type=int, default=60)
+    monitor.add_argument("--interval-seconds", type=int, default=15, help="Target quote-check interval; long scans can overrun it. Candle work is reused until new closed inputs arrive.")
     monitor.add_argument("--iterations", type=int, default=0)
     monitor.add_argument(
         "--alert-sinks",
@@ -95,6 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--alert-cooldown-minutes", type=int, default=60)
     monitor.add_argument("--minimum-alert-confidence", type=float, default=0.0)
     monitor.add_argument("--minimum-alert-consensus", type=float, default=0.0)
+    monitor.add_argument("--paper", action="store_true", help="Observe a hypothetical portfolio; never submit orders.")
+    monitor.add_argument("--paper-account", default="default")
+    monitor.add_argument("--paper-risk-budget-percent", type=float, default=2.0)
+    monitor.add_argument("--paper-max-positions", type=int, default=5)
     return parser
 
 
@@ -142,6 +168,8 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--maximum-quote-age-seconds", type=float, default=30.0)
     parser.add_argument("--maximum-staleness-bars", type=int, default=1, choices=(1, 2, 3))
     parser.add_argument("--scan-timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--no-candle-cache", action="store_true", help="Fetch full windows for baseline measurements.")
+    parser.add_argument("--no-replay-capture", action="store_true", help="Disable rolling diagnostic snapshots for this scan.")
     parser.add_argument("--execution-timeframe", default="15m")
     parser.add_argument("--context-timeframes", default="1h,4h")
     parser.add_argument(
@@ -175,6 +203,7 @@ def _add_research_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--output-dir", default="data/history")
     parser.add_argument("--strict-gaps", action="store_true")
+    parser.add_argument("--futures-inputs", default="", help="JSON file containing sourced contract and historical funding evidence.")
 
 
 def _config(path: str) -> RegimeBotConfig:
@@ -211,6 +240,8 @@ def _scan_request(args: argparse.Namespace) -> ScanRequest:
         equity=args.equity,
         risk_percent=args.risk_percent,
         maximum_notional_multiple=args.maximum_notional_multiple,
+        use_candle_cache=not args.no_candle_cache,
+        capture_replay=not args.no_replay_capture,
     )
 
 
@@ -296,6 +327,31 @@ def main(argv: list[str] | None = None) -> int:
         config = _config(args.config)
         store = SignalStore(args.db)
 
+        if args.command == "metrics":
+            _print_json(summarize_scans(store.recent_scans(limit=args.limit)))
+            return 0
+        if args.command == "snapshots":
+            _print_json({"items": ReplayStore(store).recent(limit=args.limit)})
+            return 0
+        if args.command == "replay":
+            if bool(args.file) == bool(args.snapshot_id):
+                raise ValueError("Provide a snapshot ID or --file, but not both.")
+            snapshot = json.loads(Path(args.file).read_text(encoding="utf-8")) if args.file else ReplayStore(store).get(args.snapshot_id)
+            result = replay_snapshot(snapshot)
+            if args.export:
+                destination = Path(args.export)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(json.dumps(snapshot, indent=2, allow_nan=False), encoding="utf-8")
+                result["exported_to"] = str(destination)
+            _print_json(result)
+            return 0 if result["passed"] else 2
+        if args.command == "paper-status":
+            tracker = PaperTracker.open_existing(store, account_id=args.account)
+            _print_json({"status": "not_started", "account_id": args.account} if tracker is None else {
+                "summary": tracker.summary(), "positions": tracker.positions(), "events": tracker.events(),
+            })
+            return 0
+
         if args.command == "dashboard":
             try:
                 import uvicorn
@@ -342,18 +398,43 @@ def main(argv: list[str] | None = None) -> int:
                     )
             return 0
 
-        if args.command in {"scan", "monitor"}:
+        if args.command in {"scan", "monitor", "benchmark"}:
             scanner = MarketScanner(RegimeSignalEngine(config), store=store)
             request = _scan_request(args)
+            if args.command == "benchmark":
+                if not 1 <= args.repetitions <= 10:
+                    raise ValueError("repetitions must be between 1 and 10.")
+                if request.auto_universe:
+                    universe = scanner.discover_universe(request)
+                    if not universe.candidates:
+                        _print_json({"status": "empty", "rejections": [item.to_dict() for item in universe.rejections]})
+                        return 0
+                    request = replace(request, symbols=tuple(item.symbol for item in universe.candidates), auto_universe=False)
+                measurements = []
+                for cached in (False, True):
+                    for _ in range(args.repetitions):
+                        trial = replace(request, use_candle_cache=cached)
+                        report = scanner.scan(trial)
+                        measurements.append({"request": asdict(trial), "result": report.to_dict()})
+                _print_json({"measurements": measurements, "summary": summarize_scans(measurements),
+                             "note": "Public observations use evolving quotes. Use offline replay to assess exact decision parity."})
+                return 2 if any(item["result"]["status"] in {"failed", "degraded"} for item in measurements) else 0
             if args.command == "scan":
                 report = scanner.scan(request)
                 _print_json(report.to_dict()) if args.json else _print_scan(report)
                 return 2 if report.status in {"failed", "degraded"} else 0
 
-            if args.interval_seconds < 60:
-                raise ValueError("interval-seconds must be at least 60.")
+            if not 1 <= args.interval_seconds <= 300:
+                raise ValueError("interval-seconds must be between 1 and 300.")
             if args.iterations < 0:
                 raise ValueError("iterations cannot be negative.")
+            tracker = PaperTracker(store, account_id=args.paper_account, policy=PaperPolicy(
+                assumed_equity=request.equity, fee_bps=config.risk.fee_bps, slippage_bps=config.risk.slippage_bps,
+                maximum_open_risk_percent=args.paper_risk_budget_percent, max_open_positions=args.paper_max_positions,
+                maximum_gross_notional_multiple=request.maximum_notional_multiple or config.risk.maximum_notional_multiple,
+                maximum_quote_age_seconds=request.maximum_quote_age_seconds,
+            )) if args.paper else None
+            heartbeat = max(1.0, min(float(args.interval_seconds), 60.0, request.maximum_quote_age_seconds / 2))
             dispatcher = AlertDispatcher(
                 store,
                 policy=AlertPolicy(
@@ -366,9 +447,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             iteration = 0
             while args.iterations == 0 or iteration < args.iterations:
+                cycle_started = time.monotonic()
                 try:
                     report = scanner.scan(request)
                     _print_scan(report)
+                    if tracker is not None:
+                        paper_result = observe_paper_scan(scanner, tracker, report)
+                        print(f"Paper: {paper_result['summary']}")
                     for item in report.items:
                         if item.signal is not None and item.is_actionable():
                             delivery = dispatcher.dispatch(
@@ -382,12 +467,16 @@ def main(argv: list[str] | None = None) -> int:
                                 print(f"alert delivery failed for {item.candidate.symbol}: {failure}", file=sys.stderr)
                 except Exception as exc:
                     print(f"monitor cycle failed: {exc}", file=sys.stderr)
+                    if tracker is not None:
+                        tracker.mark_monitoring_gap(reason="monitor_cycle_failed")
                 iteration += 1
                 if args.iterations and iteration >= args.iterations:
                     break
-                time.sleep(args.interval_seconds)
+                boundary_delay = next_monitor_delay(now=datetime.now(UTC), timeframes=(request.execution_timeframe, *request.context_timeframes), heartbeat_seconds=heartbeat)
+                time.sleep(min(boundary_delay, max(.05, heartbeat - (time.monotonic() - cycle_started))))
             return 0
 
+        futures_inputs = parse_futures_inputs(json.loads(Path(args.futures_inputs).read_text(encoding="utf-8"))) if args.futures_inputs else None
         frames, datasets = _research_frames(history, args)
         research = ResearchService(config)
         if args.command == "backtest-live":
@@ -399,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
                 risk_percent=args.risk_percent,
                 maximum_notional_multiple=args.maximum_notional_multiple,
                 allow_short=True,
+                futures_inputs=futures_inputs,
             )
             diagnostics = research.diagnostics(result)
             run_id = store.record_backtest(
@@ -442,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             maximum_notional_multiple=args.maximum_notional_multiple,
             monte_carlo_simulations=args.monte_carlo,
             allow_short=True,
+            futures_inputs=futures_inputs,
         )
         run_id = store.record_backtest(
             request={

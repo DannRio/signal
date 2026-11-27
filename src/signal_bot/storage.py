@@ -419,6 +419,13 @@ class SignalStore:
             )
         return run_id
 
+    def update_scan_result(self, run_id: str, result: dict[str, Any]) -> None:
+        """Attach measured persistence timing without changing original request identity."""
+        with self._connection() as connection:
+            cursor = connection.execute("UPDATE scans SET result_json=? WHERE run_id=?", (_dump(result), run_id))
+            if cursor.rowcount != 1:
+                raise KeyError("Scan run does not exist.")
+
     def recent_scans(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if limit <= 0 or limit > 500:
             raise ValueError("limit must be between 1 and 500.")

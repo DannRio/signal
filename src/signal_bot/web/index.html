@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KuCoin Futures Signal Machine</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=2.1.1">
+  <link rel="stylesheet" href="/assets/styles.css?v=2.2.0">
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +26,7 @@
     <button class="tab active" data-tab="live">Live Signal</button>
     <button class="tab" data-tab="scanner">Market Scanner</button>
     <button class="tab" data-tab="backtest">Backtest & Validation</button>
+    <button class="tab" data-tab="paper">Paper outcomes</button>
     <button class="tab" data-tab="journal">Journal</button>
   </nav>
 
@@ -109,13 +110,17 @@
         <label>Scan budget (seconds)<input id="scanTimeout" type="number" value="180" min="10" max="900"></label>
         <label>Entry timeframe<input id="scanExecution" value="15m"></label>
         <label>Context timeframes<input id="scanContexts" value="1h,4h"></label>
+        <label>Track this scan in paper account<select id="scanPaper"><option value="off">Off</option><option value="on">On — hypothetical only</option></select></label>
+        <label>Paper account<input id="scanPaperAccount" value="default"></label>
       </div>
       <div class="message info">Rule alignment is not a win probability. Qualified setups expire with their quote or decision candle. Risk estimates include configured fees and slippage; funding, liquidation, and combined portfolio exposure require separate review.</div>
-      <div id="scanLoading" class="loading hidden">Scanning markets sequentially to respect exchange rate limits…</div>
+      <div id="scanLoading" class="loading hidden">Checking markets and reusing validated candle history…</div>
       <div id="scanError" class="message error hidden"></div>
       <article id="scanResults" class="content-card hidden">
         <div class="section-heading small"><h3>Ranked opportunities</h3><span id="scanSummary" class="muted"></span></div>
         <p id="scanAudit" class="muted"></p><div id="scanMessages"></div>
+        <div id="scanMetrics" class="metric-grid"></div>
+        <details class="scan-rejections"><summary>Scan timing and replay evidence</summary><div id="scanTiming" class="key-value"></div><p class="muted">Stage timings can overlap. Replay checks use the original candles, configuration, quote, and evaluation time.</p><div id="scanReplayResult" class="message info hidden"></div></details>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Market</th><th>Status</th><th>Regime</th><th>Alignment</th><th>Agreement</th><th>24h USDT turnover</th><th>Spread bps</th><th>Contracts</th><th>Details</th></tr></thead><tbody id="scanRows"></tbody></table></div>
         <details class="scan-rejections"><summary>Rejected markets and reasons</summary><div class="table-wrap"><table><thead><tr><th>Market</th><th>Code</th><th>Reason</th></tr></thead><tbody id="scanRejections"></tbody></table></div></details>
       </article>
@@ -139,11 +144,13 @@
         <label>Notional cap (× equity)<input id="btLeverage" type="number" value="1" min="0.1" max="5" step="0.1"></label>
         <label>Monte Carlo paths<input id="btMonteCarlo" type="number" value="2000" min="100" max="100000"></label>
       </div>
-      <div class="message warning"><strong>Research rule:</strong> a positive backtest is not enough. The validation gate checks untouched test data, cost stress, trade count, drawdown, and Monte Carlo risk. Historical funding settlements, contract-lot rounding, maintenance margin, and liquidation price are not yet applied, so a pass remains incomplete for live futures use.</div>
+      <label class="content-card">Futures evidence file (optional JSON)<input id="futuresEvidenceFile" type="file" accept=".json,application/json"><span class="muted">Supply contract specifications, settlement schedules, historical funding rates and mark prices to enable futures accounting. Missing evidence is never replaced with zero funding.</span></label>
+      <div class="message info">The validation gate checks untouched test data, cost stress, trade count, drawdown, and Monte Carlo risk. Historical funding and contract-lot accounting require a complete evidence file. Maintenance margin and liquidation remain outside this simulation.</div>
       <div id="btLoading" class="loading hidden">Downloading historical candles and simulating trades. Large date ranges may take several minutes…</div>
       <div id="btError" class="message error hidden"></div>
       <div id="btResults" class="hidden">
         <div class="metric-grid" id="btMetrics"></div>
+        <p id="futuresSimulation" class="message info"></p>
         <div class="chart-card"><h3>Equity curve</h3><canvas id="equityChart" height="330"></canvas></div>
         <div class="two-column">
           <article class="content-card"><h3>Trade quality</h3><div id="tradeQuality" class="key-value"></div></article>
@@ -152,6 +159,16 @@
         <article class="content-card"><h3>Yearly performance</h3><div class="table-wrap"><table><thead><tr><th>Year</th><th>Trades</th><th>Win rate</th><th>Net P&amp;L</th><th>Average R</th><th>Profit factor</th></tr></thead><tbody id="yearlyRows"></tbody></table></div></article>
         <article class="content-card"><h3>Trade ledger</h3><div class="table-wrap tall"><table><thead><tr><th>Entry</th><th>Exit</th><th>Side</th><th>Setup</th><th>Entry price</th><th>Exit price</th><th>Net P&amp;L</th><th>R</th><th>Reason</th></tr></thead><tbody id="tradeRows"></tbody></table></div></article>
       </div>
+    </section>
+
+    <section id="tab-paper" class="panel tab-panel">
+      <div class="section-heading"><div><h2>Forward paper outcomes</h2><p>Observe hypothetical entries and exits using a fixed policy and shared portfolio limits.</p></div><button id="refreshPaperButton" class="primary">Refresh outcomes</button></div>
+      <label>Paper account<input id="paperAccount" value="default"></label>
+      <div class="message info">Default policy: full exit at target 1, with configured fees and adverse slippage. Quote observations are sampled; they cannot prove what happened between samples. Keep the monitor running for ongoing observations. Monitoring gaps retain unresolved exposure and pause new entries.</div>
+      <div id="paperError" class="message error hidden"></div><p id="paperStatus" class="muted"></p>
+      <div id="paperMetrics" class="metric-grid"></div>
+      <article class="content-card"><h3>Positions and outcomes</h3><div class="table-wrap"><table><thead><tr><th>Market</th><th>Side</th><th>Status</th><th>Entry</th><th>Exit</th><th>Contracts</th><th>P&amp;L before funding</th><th>Exit / gap reason</th></tr></thead><tbody id="paperRows"></tbody></table></div></article>
+      <article class="content-card"><h3>Admission history</h3><div class="table-wrap"><table><thead><tr><th>Observed</th><th>Market</th><th>Decision</th><th>Reason</th></tr></thead><tbody id="paperEvents"></tbody></table></div></article>
     </section>
 
     <section id="tab-journal" class="panel tab-panel">
@@ -166,12 +183,14 @@
         <article class="content-card"><h3>Historical datasets</h3><div id="datasetJournal" class="journal-list"></div></article>
       </div>
       <article class="content-card"><h3>Recent backtests</h3><div id="backtestJournal" class="journal-list"></div></article>
+      <article class="content-card"><h3>Decision replay archive</h3><p class="muted">Recent complete input snapshots are retained in a rolling archive. Export evidence you need to keep longer.</p><div id="replayJournal" class="journal-list"></div></article>
+      <article class="content-card"><h3>Measured scan workloads</h3><div id="workloadMetrics" class="journal-list"></div></article>
     </section>
   </main>
 
   <footer>
     Signal-only KuCoin Futures research software. It does not submit orders, bypass geographic restrictions, guarantee profit, or replace venue eligibility and risk checks.
   </footer>
-  <script src="/assets/app.js?v=2.1.1"></script>
+  <script src="/assets/app.js?v=2.2.0"></script>
 </body>
 </html>

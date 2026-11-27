@@ -15,7 +15,7 @@ It is deliberately **signal-only**. It does not submit orders, store exchange cr
 
 KuCoin's futures Kline endpoint returns at most 500 candles per request, and a live CCXT request may return fewer rows than requested. The live adapter therefore paginates forward from a bounded timestamp, removes overlapping candles, and retains the latest requested closed-candle window. A public KuCoin Futures verification assembled 500 unique, ordered candles for each of 15m, 1h, and 4h and produced all three timeframe states.
 
-Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration only after documenting your actual fee tier and observed fills. Historical funding settlements are not yet deducted from trade P&L, so no validation result should be treated as complete evidence for live futures deployment until funding is modeled. The `maximum_notional_multiple` setting is only a modeled notional-to-equity cap; it does not change leverage on KuCoin, estimate liquidation. The scanner now produces a separate contract-rounded plan; historical backtests and the standalone Live Signal model retain base-quantity sizing.
+Default backtests retain a conservative 10 bps fee estimate per side and 5 bps slippage per side; adjust the configuration after documenting your actual fee tier and observed fills. Supplying complete `futures_inputs` evidence enables historical settlement funding and contract-valid historical sizing; without it, those aspects remain explicitly unmodeled. The `maximum_notional_multiple` setting caps modeled notional relative to equity; it does not change exchange leverage or estimate liquidation. The scanner produces a separate contract-rounded plan. The standalone Live Signal model and legacy backtest mode retain base-quantity sizing.
 
 ## Major capabilities
 
@@ -38,22 +38,21 @@ Default backtests retain a conservative 10 bps fee estimate per side and 5 bps s
 - Local browser dashboard with price chart, signal explanation, scanner, backtest charts, trade ledger, and journal
 - FastAPI endpoints, Docker support, and automated Windows/Ubuntu CI on Python 3.11 and 3.12
 
-## Windows PowerShell setup
+## Windows setup without PowerShell activation
 
-```powershell
-cd C:\Trading\Signal\signal
+```bat
+cd /d C:\Trading\Signal\signal
 
 py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-python -m pytest -q
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pytest -q
 ```
 
 ## Start the real dashboard
 
-```powershell
-signal-machine dashboard
+```bat
+.venv\Scripts\python.exe -m signal_bot.launcher dashboard
 ```
 
 Open:
@@ -62,12 +61,17 @@ Open:
 http://127.0.0.1:8081
 ```
 
-The dashboard has four sections:
+The dashboard has five sections:
 
 1. **Live Signal** — regime, decision, rule alignment, timeframe alignment, price chart, entry, stop and targets.
 2. **Market Scanner** — qualified/blocked/failed outcomes, uniform universe filters, contract quantities, funding context, data diagnostics, and expiry across explicit symbols or a liquid universe.
 3. **Backtest & Validation** — automatic historical download, equity curve, yearly results, trade ledger, OOS testing, cost stress and Monte Carlo analysis.
-4. **Journal** — persistent signals, datasets and research runs.
+4. **Paper outcomes** — hypothetical positions, shared exposure limits, skipped opportunities, outcomes and unresolved monitoring gaps.
+5. **Journal** — persistent signals, datasets, research runs, complete decision replay inputs and measured scan workloads.
+
+Commands below use installed console commands. Without activating the virtual environment,
+replace `signal-machine` with `.venv\Scripts\python.exe -m signal_bot.launcher` and
+`signal-bot` with `.venv\Scripts\python.exe -m signal_bot.cli`.
 
 The developer API documentation remains available at:
 
@@ -185,7 +189,7 @@ signal-machine monitor `
   --symbols BTC/USDT:USDT,ETH/USDT:USDT,SOL/USDT:USDT `
   --execution-timeframe 15m `
   --context-timeframes 1h,4h `
-  --interval-seconds 60 `
+  --interval-seconds 15 `
   --alert-sinks console,jsonl
 ```
 
@@ -226,3 +230,9 @@ src/signal_bot/
 ```
 
 See [Professional Architecture](docs/PROFESSIONAL_MACHINE.md), [Operations](docs/OPERATIONS.md), and [Validation Standard](docs/VALIDATION.md).
+
+## Scanner evidence and scaling (v2.2)
+
+Scans now record detailed timings and complete replay inputs, reuse validated closed candles in SQLite, and update only due timeframes. The monitor rechecks quote qualification independently of unchanged candle analyses. Optional forward paper accounts track shared risk budgets, outcomes and unresolved gaps; supplied historical futures evidence enables funding and contract-lot accounting in research. Strategy thresholds are unchanged.
+
+See [the v2.2 operating guide](docs/SCALING_AND_PAPER.md) for commands, API endpoints, evidence format, assumptions, backup and rollback. Network request concurrency remains one until representative measurements justify an increase.

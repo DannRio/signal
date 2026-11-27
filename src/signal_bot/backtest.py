@@ -2,13 +2,28 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 
 from .engine import RegimeSignalEngine
+from .futures import ContractSpec
+from .futures_research import (
+    FundingSettlement,
+    FuturesResearchError,
+    FuturesResearchInputs,
+    closing_chunks,
+    contract_bounds,
+    decimal_value,
+    entry_contracts,
+    parse_futures_inputs,
+    prepare_futures_frame,
+    round_step,
+    rounded_fill,
+)
 from .models import (
     BacktestResult,
     BacktestTrade,
@@ -20,6 +35,7 @@ from .models import (
     SignalAction,
 )
 from .validation import prepare_ohlcv, timeframe_to_timedelta
+from .venue import normalize_symbol
 
 
 @dataclass
@@ -54,6 +70,15 @@ class _Position:
     lowest_low: float = math.inf
     bars_held: int = 0
     last_exit_reason: str = ""
+    contract_spec: ContractSpec | None = None
+    original_contracts: Decimal | None = None
+    remaining_contracts: Decimal | None = None
+    funding_pnl: float = 0.0
+    funding_payments: list[dict] = field(default_factory=list)
+    exit_fills: list[dict] = field(default_factory=list)
+    partial_exit_skips: list[dict] = field(default_factory=list)
+    tp1_processed: bool = False
+    tp2_processed: bool = False
 
 
 class RegimeBacktester:
@@ -76,15 +101,22 @@ class RegimeBacktester:
         starting_equity: float = 10_000.0,
         risk_percent: float | None = None,
         maximum_notional_multiple: float | None = None,
+        futures_inputs: FuturesResearchInputs | Mapping | None = None,
     ) -> BacktestResult:
         if starting_equity <= 0 or not math.isfinite(starting_equity):
             raise ValueError(
                 "starting_equity must be positive and finite."
             )
+        futures = parse_futures_inputs(futures_inputs)
+        if futures is not None and normalize_symbol(symbol) != futures.contract_spec.symbol:
+            raise FuturesResearchError("futures_symbol_mismatch", "Funding/specification evidence belongs to a different contract symbol.")
         execution = execution_timeframe.strip().lower()
         raw_normalized = self.engine._normalize_frames(frames)
         normalized = {
-            timeframe: prepare_ohlcv(frame)
+            timeframe: (
+                prepare_futures_frame(frame, timeframe, minimum_bars=self.engine.config.minimum_bars)
+                if futures is not None else prepare_ohlcv(frame)
+            )
             for timeframe, frame in raw_normalized.items()
         }
         self.engine._validate_timeframe_hierarchy(
@@ -121,6 +153,11 @@ class RegimeBacktester:
             drop=True
         )
         execution_delta = timeframe_to_timedelta(execution)
+        terminal_time = (execution_frame.iloc[-1]["timestamp"] + execution_delta).to_pydatetime()
+        funding_events = futures.funding.events_for_window(
+            execution_frame.iloc[0]["timestamp"].to_pydatetime(), terminal_time,
+            [value.to_pydatetime() for value in execution_frame["timestamp"]],
+        ) if futures is not None else {}
         risk_pct = (
             self.engine.config.risk.risk_percent
             if risk_percent is None
@@ -138,7 +175,7 @@ class RegimeBacktester:
             raise ValueError(
                 "risk_percent is outside configured limits."
             )
-        if notional_multiple <= 0:
+        if notional_multiple <= 0 or not math.isfinite(notional_multiple):
             raise ValueError(
                 "maximum_notional_multiple must be positive."
             )
@@ -154,9 +191,13 @@ class RegimeBacktester:
             self.engine.config.risk.slippage_bps / 10_000.0
         )
         minimum_index = self.engine.config.minimum_bars - 1
+        unfilled_entry_attempts = 0
 
         for index, row in execution_frame.iterrows():
             timestamp = row["timestamp"].to_pydatetime()
+            bar_close = (row["timestamp"] + execution_delta).to_pydatetime()
+            if position is not None and timestamp in funding_events:
+                cash_equity = self._apply_funding(position, funding_events[timestamp], cash_equity)
 
             if position is not None and pending_regime_exit:
                 exit_price = self._slipped_price(
@@ -164,6 +205,7 @@ class RegimeBacktester:
                     position.side,
                     is_entry=False,
                     slippage_rate=slippage_rate,
+                    contract_spec=position.contract_spec,
                 )
                 cash_equity = self._close_quantity(
                     position,
@@ -172,6 +214,7 @@ class RegimeBacktester:
                     fee_rate,
                     cash_equity,
                     "regime_flip",
+                    timestamp=timestamp,
                 )
                 trades.append(
                     self._finalize_trade(position, timestamp)
@@ -195,7 +238,10 @@ class RegimeBacktester:
                         maximum_notional_multiple=notional_multiple,
                         fee_rate=fee_rate,
                         slippage_rate=slippage_rate,
+                        futures_inputs=futures,
                     )
+                    if position is None:
+                        unfilled_entry_attempts += 1
                 pending_entry = None
 
             if position is not None:
@@ -216,6 +262,8 @@ class RegimeBacktester:
                         equity=cash_equity,
                         fee_rate=fee_rate,
                         slippage_rate=slippage_rate,
+                        bar_close=bar_close,
+                        close_funding=funding_events.get(bar_close),
                     )
                 )
                 if completed is not None:
@@ -269,17 +317,20 @@ class RegimeBacktester:
                     float(row["close"]),
                 )
             equity_curve.append(
-                (timestamp, float(marked_equity))
+                (bar_close if futures is not None else timestamp, float(marked_equity))
             )
 
         if position is not None:
             final_row = execution_frame.iloc[-1]
-            final_time = final_row["timestamp"].to_pydatetime()
+            final_time = terminal_time if futures is not None else final_row["timestamp"].to_pydatetime()
+            if final_time in funding_events:
+                cash_equity = self._apply_funding(position, funding_events[final_time], cash_equity)
             exit_price = self._slipped_price(
                 float(final_row["close"]),
                 position.side,
                 is_entry=False,
                 slippage_rate=slippage_rate,
+                contract_spec=position.contract_spec,
             )
             cash_equity = self._close_quantity(
                 position,
@@ -288,6 +339,7 @@ class RegimeBacktester:
                 fee_rate,
                 cash_equity,
                 "end_of_data",
+                timestamp=final_time,
             )
             trades.append(
                 self._finalize_trade(position, final_time)
@@ -301,6 +353,17 @@ class RegimeBacktester:
             ending_equity=cash_equity,
             trades=trades,
             equity_curve=equity_curve,
+            simulation_metadata={
+                **(futures.metadata(settlements_in_window=len(funding_events)) if futures is not None else {
+                    "mode": "legacy_fractional_base_quantity", "funding_modeled": False,
+                    "contract_rounding_modeled": False, "margin_and_liquidation_modeled": False,
+                    "limitations": ["Historical funding and contract-lot constraints are not modeled.", "Margin, liquidation and order-book capacity are not modeled."],
+                    "live_ready": False,
+                }),
+                "funding_payments_applied": sum(len(trade.funding_payments) for trade in trades),
+                "unfilled_entry_attempts": unfilled_entry_attempts,
+                "intrabar_fill_timestamps": "bar_open_identifies_the_bar_not_exact_execution_time",
+            },
         )
 
     def _frames_at_decision(
@@ -339,7 +402,14 @@ class RegimeBacktester:
         maximum_notional_multiple: float,
         fee_rate: float,
         slippage_rate: float,
+        futures_inputs: FuturesResearchInputs | None = None,
     ) -> tuple[_Position | None, float]:
+        if futures_inputs is not None:
+            return self._open_futures_position(
+                plan=plan, signal=signal, row=row, equity=equity,
+                risk_percent=risk_percent, maximum_notional_multiple=maximum_notional_multiple,
+                fee_rate=fee_rate, slippage_rate=slippage_rate, spec=futures_inputs.contract_spec,
+            )
         side = plan.side
         raw_open = float(row["open"])
         if not (plan.entry_low <= raw_open <= plan.entry_high):
@@ -418,6 +488,110 @@ class RegimeBacktester:
         )
         return position, equity_after_fee
 
+    def _open_futures_position(
+        self,
+        *,
+        plan: EntryPlan,
+        signal: MarketSignal,
+        row: pd.Series,
+        equity: float,
+        risk_percent: float,
+        maximum_notional_multiple: float,
+        fee_rate: float,
+        slippage_rate: float,
+        spec: ContractSpec,
+    ) -> tuple[_Position | None, float]:
+        side = PositionSide(plan.side)
+        low = decimal_value(plan.entry_low, "entry_low", positive=True)
+        high = decimal_value(plan.entry_high, "entry_high", positive=True)
+        raw = decimal_value(row["open"], "candle open", positive=True)
+        if not low <= raw <= high:
+            return None, equity
+        entry = rounded_fill(raw, side, is_entry=True, slippage_rate=slippage_rate, spec=spec)
+        if not low <= entry <= high:
+            return None, equity
+        long = side == PositionSide.LONG
+        stop = round_step(decimal_value(plan.stop_loss, "initial stop", positive=True), spec.tick_size, up=not long)
+        distance = entry - stop if long else stop - entry
+        if stop <= 0 or distance <= 0:
+            return None, equity
+        direction = Decimal(1) if long else Decimal(-1)
+        targets = [
+            round_step(entry + direction * decimal_value(value, "target R", positive=True) * distance,
+                       spec.tick_size, up=not long)
+            for value in (plan.reward_to_risk_1, plan.reward_to_risk_2, plan.reward_to_risk_3)
+        ]
+        if min(targets) <= 0 or not (stop < entry < targets[0] < targets[1] < targets[2] if long
+                else targets[2] < targets[1] < targets[0] < entry < stop):
+            return None, equity
+        stop_fill = rounded_fill(stop, side, is_entry=False, slippage_rate=slippage_rate, spec=spec)
+        contracts, risk_per_unit = entry_contracts(
+            spec, entry=entry, stop_fill=stop_fill, equity=equity, risk_percent=risk_percent,
+            notional_multiple=maximum_notional_multiple, fee_rate=fee_rate,
+        )
+        if contracts <= 0:
+            return None, equity
+        quantity = contracts * spec.contract_size
+        opening_fee = entry * quantity * decimal_value(fee_rate, "fee rate")
+        after_fee = equity - float(opening_fee)
+        if after_fee <= 0:
+            return None, equity
+        position = _Position(
+            side=side, setup_type=plan.setup_type, signal_time=signal.generated_at,
+            entry_time=row["timestamp"].to_pydatetime(), entry_price=float(entry),
+            initial_stop=float(stop), stop=float(stop), target1=float(targets[0]),
+            target2=float(targets[1]), target3=float(targets[2]),
+            original_quantity=float(quantity), remaining_quantity=float(quantity),
+            initial_risk=float(quantity * risk_per_unit), opening_fee=float(opening_fee),
+            accumulated_fees=float(opening_fee), highest_high=float(row["open"]),
+            lowest_low=float(row["open"]), contract_spec=spec,
+            original_contracts=contracts, remaining_contracts=contracts,
+        )
+        return position, after_fee
+
+    @staticmethod
+    def _apply_funding(position: _Position, event: FundingSettlement, equity: float) -> float:
+        if position.contract_spec is None or position.remaining_contracts is None:
+            raise FuturesResearchError("invalid_futures_position", "Funding requires an exact remaining contract position.")
+        quantity = position.remaining_contracts * position.contract_spec.contract_size
+        cashflow = event.cashflow(position.side, quantity)
+        position.funding_pnl += float(cashflow)
+        position.funding_payments.append({
+            **event.to_dict(), "contracts": str(position.remaining_contracts),
+            "base_quantity": str(quantity), "cashflow": str(cashflow),
+        })
+        equity += float(cashflow)
+        marked_equity = equity + (
+            (float(event.mark_price) - position.entry_price) * float(quantity)
+            * (1 if position.side == PositionSide.LONG else -1)
+        )
+        if not math.isfinite(equity) or not math.isfinite(marked_equity) or min(equity, marked_equity) <= 0:
+            raise FuturesResearchError("unsupported_insolvency", "Funding/mark valuation exhausted modeled equity. Margin and liquidation mechanics are unavailable; this simulation cannot continue honestly.")
+        return equity
+
+    @staticmethod
+    def _partial_exit_quantity(position: _Position, fraction: float, price: float, timestamp: datetime, reason: str) -> float | Decimal:
+        if position.contract_spec is None:
+            return min(position.remaining_quantity, position.original_quantity * fraction)
+        spec = position.contract_spec
+        if position.original_contracts is None or position.remaining_contracts is None:
+            raise FuturesResearchError("invalid_futures_position", "Exact contract counts are missing.")
+        contracts = min(position.remaining_contracts, round_step(
+            position.original_contracts * decimal_value(fraction, "partial exit fraction"),
+            spec.lot_size, up=False,
+        ))
+        remaining = position.remaining_contracts - contracts
+        minimum, _ = contract_bounds(spec, decimal_value(price, "partial fill price", positive=True))
+        try:
+            closing_chunks(spec, contracts, decimal_value(price, "partial fill price", positive=True))
+            if remaining and remaining < minimum:
+                raise FuturesResearchError("unplaceable_contract_exit", "Partial exit would leave a below-minimum position.")
+        except FuturesResearchError as exc:
+            position.partial_exit_skips.append({"bar_open": timestamp.isoformat(), "reason": reason, "code": exc.code,
+                                                "requested_contracts": str(contracts), "remaining_contracts": str(position.remaining_contracts)})
+            return Decimal(0)
+        return contracts * spec.contract_size
+
     def _manage_position(
         self,
         *,
@@ -427,6 +601,8 @@ class RegimeBacktester:
         equity: float,
         fee_rate: float,
         slippage_rate: float,
+        bar_close: datetime | None = None,
+        close_funding: FundingSettlement | None = None,
     ) -> tuple[
         _Position | None,
         float,
@@ -458,6 +634,7 @@ class RegimeBacktester:
                 position.side,
                 is_entry=False,
                 slippage_rate=slippage_rate,
+                contract_spec=position.contract_spec,
             )
             equity = self._close_quantity(
                 position,
@@ -470,6 +647,7 @@ class RegimeBacktester:
                     if not position.tp1_filled
                     else "trailing_or_break_even_stop"
                 ),
+                timestamp=timestamp,
             )
             return (
                 None,
@@ -494,54 +672,28 @@ class RegimeBacktester:
         )
         risk = self.engine.config.risk
 
-        if target1_hit and not position.tp1_filled:
-            quantity = min(
-                position.remaining_quantity,
-                position.original_quantity
-                * risk.take_profit_1_fraction,
-            )
+        if target1_hit and not position.tp1_filled and not position.tp1_processed:
             fill = self._slipped_price(
-                position.target1,
-                position.side,
-                is_entry=False,
-                slippage_rate=slippage_rate,
+                position.target1, position.side, is_entry=False,
+                slippage_rate=slippage_rate, contract_spec=position.contract_spec,
             )
-            equity = self._close_quantity(
-                position,
-                quantity,
-                fill,
-                fee_rate,
-                equity,
-                "take_profit_1",
-            )
-            position.tp1_filled = True
-            position.stop = position.entry_price
+            quantity = self._partial_exit_quantity(position, risk.take_profit_1_fraction, fill, timestamp, "take_profit_1")
+            if quantity > 0:
+                equity = self._close_quantity(position, quantity, fill, fee_rate, equity, "take_profit_1", timestamp=timestamp)
+                position.tp1_filled = True
+                position.stop = position.entry_price
+            position.tp1_processed = True
 
-        if (
-            target2_hit
-            and not position.tp2_filled
-            and position.remaining_quantity > 0
-        ):
-            quantity = min(
-                position.remaining_quantity,
-                position.original_quantity
-                * risk.take_profit_2_fraction,
-            )
+        if target2_hit and not position.tp2_filled and not position.tp2_processed and position.remaining_quantity > 0:
             fill = self._slipped_price(
-                position.target2,
-                position.side,
-                is_entry=False,
-                slippage_rate=slippage_rate,
+                position.target2, position.side, is_entry=False,
+                slippage_rate=slippage_rate, contract_spec=position.contract_spec,
             )
-            equity = self._close_quantity(
-                position,
-                quantity,
-                fill,
-                fee_rate,
-                equity,
-                "take_profit_2",
-            )
-            position.tp2_filled = True
+            quantity = self._partial_exit_quantity(position, risk.take_profit_2_fraction, fill, timestamp, "take_profit_2")
+            if quantity > 0:
+                equity = self._close_quantity(position, quantity, fill, fee_rate, equity, "take_profit_2", timestamp=timestamp)
+                position.tp2_filled = True
+            position.tp2_processed = True
 
         if target3_hit and position.remaining_quantity > 0:
             fill = self._slipped_price(
@@ -549,6 +701,7 @@ class RegimeBacktester:
                 position.side,
                 is_entry=False,
                 slippage_rate=slippage_rate,
+                contract_spec=position.contract_spec,
             )
             equity = self._close_quantity(
                 position,
@@ -557,6 +710,7 @@ class RegimeBacktester:
                 fee_rate,
                 equity,
                 "take_profit_3",
+                timestamp=timestamp,
             )
             return (
                 None,
@@ -568,11 +722,14 @@ class RegimeBacktester:
             position.bars_held >= risk.max_holding_bars
             and position.remaining_quantity > 0
         ):
+            if close_funding is not None:
+                equity = self._apply_funding(position, close_funding, equity)
             fill = self._slipped_price(
                 float(row["close"]),
                 position.side,
                 is_entry=False,
                 slippage_rate=slippage_rate,
+                contract_spec=position.contract_spec,
             )
             equity = self._close_quantity(
                 position,
@@ -581,11 +738,12 @@ class RegimeBacktester:
                 fee_rate,
                 equity,
                 "time_stop",
+                timestamp=bar_close if position.contract_spec is not None and bar_close is not None else timestamp,
             )
             return (
                 None,
                 equity,
-                self._finalize_trade(position, timestamp),
+                self._finalize_trade(position, bar_close if position.contract_spec is not None and bar_close is not None else timestamp),
             )
 
         # Update a trailing stop only after the candle closes; it becomes
@@ -605,6 +763,10 @@ class RegimeBacktester:
                     + risk.trailing_atr_multiple * atr_value,
                 )
 
+            if position.contract_spec is not None:
+                position.stop = float(round_step(decimal_value(position.stop, "trailing stop", positive=True),
+                                                 position.contract_spec.tick_size, up=not long_side))
+
         return position, equity, None
 
     @staticmethod
@@ -614,7 +776,10 @@ class RegimeBacktester:
         *,
         is_entry: bool,
         slippage_rate: float,
+        contract_spec: ContractSpec | None = None,
     ) -> float:
+        if contract_spec is not None:
+            return float(rounded_fill(price, side, is_entry=is_entry, slippage_rate=slippage_rate, spec=contract_spec))
         if side == PositionSide.LONG:
             multiplier = (
                 1.0 + slippage_rate
@@ -632,23 +797,56 @@ class RegimeBacktester:
     @staticmethod
     def _close_quantity(
         position: _Position,
-        quantity: float,
+        quantity: float | Decimal,
         exit_price: float,
         fee_rate: float,
         equity: float,
         reason: str,
+        *,
+        timestamp: datetime | None = None,
     ) -> float:
-        quantity = min(quantity, position.remaining_quantity)
+        if position.contract_spec is not None:
+            spec = position.contract_spec
+            if position.remaining_contracts is None or position.original_contracts is None or timestamp is None:
+                raise FuturesResearchError("invalid_futures_position", "A contract close requires exact counts and an observation timestamp.")
+            price = decimal_value(exit_price, "exit price", positive=True)
+            if price % spec.tick_size != 0:
+                raise FuturesResearchError("invalid_contract_exit", "Exit price is not aligned to the supplied tick size.")
+            contracts = (
+                position.remaining_contracts if quantity == position.remaining_quantity
+                else decimal_value(quantity, "close quantity", positive=True) / spec.contract_size
+            )
+            contracts = min(contracts, position.remaining_contracts)
+            chunks = closing_chunks(spec, contracts, price)
+            direction = Decimal(1) if position.side == PositionSide.LONG else Decimal(-1)
+            for chunk in chunks:
+                base_quantity = chunk * spec.contract_size
+                gross = direction * (price - Decimal(str(position.entry_price))) * base_quantity
+                closing_fee = price * base_quantity * Decimal(str(fee_rate))
+                position.gross_pnl += float(gross)
+                position.accumulated_fees += float(closing_fee)
+                position.closed_value_sum += float(price * base_quantity)
+                position.remaining_contracts -= chunk
+                position.remaining_quantity = float(position.remaining_contracts * spec.contract_size)
+                position.closed_quantity = float((position.original_contracts - position.remaining_contracts) * spec.contract_size)
+                position.last_exit_reason = reason
+                position.exit_fills.append({
+                    "timestamp": timestamp.isoformat(), "reason": reason,
+                    "contracts": str(chunk), "base_quantity": str(base_quantity),
+                    "price": str(price), "fee": str(closing_fee),
+                    "timestamp_precision": "bar" if reason.startswith("take_profit") or "stop" in reason and reason != "time_stop" else "boundary",
+                })
+                equity += float(gross - closing_fee)
+            if not math.isfinite(equity) or equity <= 0:
+                raise FuturesResearchError("unsupported_insolvency", "Modeled equity is exhausted; an unmodeled liquidation must not be represented as an ordinary continuing backtest.")
+            return equity
+        quantity = min(float(quantity), position.remaining_quantity)
         if quantity <= 0:
             return equity
         if position.side == PositionSide.LONG:
-            gross = (
-                exit_price - position.entry_price
-            ) * quantity
+            gross = (exit_price - position.entry_price) * quantity
         else:
-            gross = (
-                position.entry_price - exit_price
-            ) * quantity
+            gross = (position.entry_price - exit_price) * quantity
         closing_fee = exit_price * quantity * fee_rate
         position.gross_pnl += gross
         position.accumulated_fees += closing_fee
@@ -707,7 +905,7 @@ class RegimeBacktester:
             if position.closed_quantity > 0
             else position.entry_price
         )
-        net = position.gross_pnl - position.accumulated_fees
+        net = position.gross_pnl - position.accumulated_fees + position.funding_pnl
         r_multiple = (
             net / position.initial_risk
             if position.initial_risk > 0
@@ -730,6 +928,12 @@ class RegimeBacktester:
             r_multiple=r_multiple,
             exit_reason=(position.last_exit_reason or "unknown"),
             bars_held=position.bars_held,
+            funding_pnl=position.funding_pnl if position.contract_spec is not None else None,
+            funding_payments=tuple(position.funding_payments),
+            contract_size=float(position.contract_spec.contract_size) if position.contract_spec is not None else None,
+            entry_contracts=float(position.original_contracts) if position.original_contracts is not None else None,
+            exit_fills=tuple(position.exit_fills),
+            partial_exit_skips=tuple(position.partial_exit_skips),
         )
 
     @staticmethod
@@ -741,6 +945,7 @@ class RegimeBacktester:
         ending_equity: float,
         trades: list[BacktestTrade],
         equity_curve: list[tuple[datetime, float]],
+        simulation_metadata: dict | None = None,
     ) -> BacktestResult:
         net_pnl = ending_equity - starting_equity
         total_return = net_pnl / starting_equity * 100.0
@@ -816,4 +1021,6 @@ class RegimeBacktester:
             average_r=expectancy,
             trades_detail=tuple(trades),
             equity_curve=tuple(equity_curve),
+            funding_pnl=(sum(trade.funding_pnl or 0.0 for trade in trades) if (simulation_metadata or {}).get("funding_modeled") else None),
+            simulation_metadata=simulation_metadata or {},
         )

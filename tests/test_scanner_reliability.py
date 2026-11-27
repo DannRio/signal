@@ -432,7 +432,8 @@ def test_default_scanner_reuses_one_client_for_universe_quotes_and_candles(monke
     assert scanner.scan(scan_request(symbols=(AAA,))).status == "complete"
     assert scanner.scan(scan_request(symbols=(AAA,))).status == "complete"
     assert created == [("kucoinfutures", "swap")]
-    assert candle_clients == [client, client]
+    # The service also survives cycles so unchanged candle analyses can be reused.
+    assert candle_clients == [client]
     assert client.loads == [True, True]
     assert len(client.calls) == 4  # Discovery and final quote verification per cycle.
 

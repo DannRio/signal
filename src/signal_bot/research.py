@@ -13,6 +13,11 @@ import pandas as pd
 from .backtest import RegimeBacktester
 from .config import RegimeBotConfig
 from .engine import RegimeSignalEngine
+from .futures_research import (
+    FuturesResearchError,
+    FuturesResearchInputs,
+    parse_futures_inputs,
+)
 from .models import (
     BacktestResult,
     BacktestTrade,
@@ -101,6 +106,7 @@ class ResearchService:
         config: RegimeBotConfig | None = None,
         allow_short: bool = True,
         evaluation_start: pd.Timestamp | None = None,
+        futures_inputs: FuturesResearchInputs | Mapping[str, Any] | None = None,
     ) -> BacktestResult:
         engine = _ResearchEngine(
             config or self.config,
@@ -114,6 +120,7 @@ class ResearchService:
             starting_equity=starting_equity,
             risk_percent=risk_percent,
             maximum_notional_multiple=maximum_notional_multiple,
+            futures_inputs=futures_inputs,
         )
         if evaluation_start is not None:
             result = replace(
@@ -149,6 +156,12 @@ class ResearchService:
         )
         return {
             "summary": to_dict(result),
+            "simulation": result.simulation_metadata,
+            "funding": {
+                "modeled": result.simulation_metadata.get("funding_modeled", False),
+                "net_cashflow": result.funding_pnl,
+                "payments": sum(len(trade.funding_payments) for trade in trades),
+            },
             "trade_quality": {
                 "average_win_r": average_win,
                 "average_loss_r": average_loss,
@@ -185,7 +198,11 @@ class ResearchService:
         train_fraction: float = 0.60,
         validation_fraction: float = 0.20,
         allow_short: bool = True,
+        futures_inputs: FuturesResearchInputs | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if futures_inputs is not None:
+            futures_inputs = parse_futures_inputs(futures_inputs)
+            frames, _ = _prepare_research_frames(frames, minimum_bars=self.config.minimum_bars)
         windows = _chronological_windows(
             frames,
             execution_timeframe,
@@ -201,6 +218,7 @@ class ResearchService:
             risk_percent=risk_percent,
             maximum_notional_multiple=maximum_notional_multiple,
             allow_short=allow_short,
+            futures_inputs=futures_inputs,
         )
         return outputs
 
@@ -247,16 +265,21 @@ class ResearchService:
         risk_percent: float | None = None,
         maximum_notional_multiple: float | None = None,
         allow_short: bool = True,
+        futures_inputs: FuturesResearchInputs | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         minimum = self.config.minimum_bars + 2
         if window_bars < minimum:
             raise ValueError(f"window_bars must be at least {minimum}.")
         if step_bars <= 0:
             raise ValueError("step_bars must be positive.")
-        normalized = {
-            timeframe.strip().lower(): prepare_ohlcv(frame)
-            for timeframe, frame in frames.items()
-        }
+        if futures_inputs is not None:
+            futures_inputs = parse_futures_inputs(futures_inputs)
+            normalized, _ = _prepare_research_frames(frames, minimum_bars=self.config.minimum_bars)
+        else:
+            normalized = {
+                timeframe.strip().lower(): prepare_ohlcv(frame)
+                for timeframe, frame in frames.items()
+            }
         execution = execution_timeframe.strip().lower()
         execution_frame = normalized[execution]
         windows: list[dict[str, Any]] = []
@@ -282,6 +305,7 @@ class ResearchService:
                     risk_percent=risk_percent,
                     maximum_notional_multiple=maximum_notional_multiple,
                     allow_short=allow_short,
+                    futures_inputs=futures_inputs,
                 )
                 windows.append(
                     {
@@ -291,6 +315,8 @@ class ResearchService:
                         "result": _compact_result(result),
                     }
                 )
+            except FuturesResearchError:
+                raise
             except ValueError as exc:
                 windows.append(
                     {
@@ -330,6 +356,7 @@ class ResearchService:
         allow_short: bool = True,
         evaluation_start: pd.Timestamp | None = None,
         evidence_scope: str = "provided_window",
+        futures_inputs: FuturesResearchInputs | Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if not multipliers:
             raise ValueError("At least one cost multiplier is required.")
@@ -353,10 +380,13 @@ class ResearchService:
                 config=stressed_config,
                 allow_short=allow_short,
                 evaluation_start=evaluation_start,
+                futures_inputs=futures_inputs,
             )
             outputs.append(
                 {
                     "scope": evidence_scope,
+                    "stressed_costs": ["fees", "slippage"],
+                    "historical_funding_rates_unchanged": futures_inputs is not None,
                     "cost_multiplier": multiplier,
                     "fee_bps": stressed_risk.fee_bps,
                     "slippage_bps": stressed_risk.slippage_bps,
@@ -684,7 +714,14 @@ class ResearchService:
             "missing_evidence": missing,
             "insufficient_evidence": inadequate,
             "thresholds": asdict(thresholds),
-            "limitations": list(_RESEARCH_LIMITATIONS),
+            "limitations": (
+                list(base_result.simulation_metadata.get("limitations", []))
+                + list(_RESEARCH_LIMITATIONS[1:])
+                if base_result.simulation_metadata.get("funding_modeled")
+                and base_result.simulation_metadata.get("contract_rounding_modeled")
+                else list(_RESEARCH_LIMITATIONS)
+            ),
+            "simulation_metadata": base_result.simulation_metadata,
             "important": (
                 "Thresholds are configurable research screening rules, not empirically "
                 "calibrated guarantees. A pass permits further paper validation only. "
@@ -703,7 +740,9 @@ class ResearchService:
         maximum_notional_multiple: float | None = None,
         monte_carlo_simulations: int = 2000,
         allow_short: bool = True,
+        futures_inputs: FuturesResearchInputs | Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        futures = parse_futures_inputs(futures_inputs)
         options = {
             "symbol": symbol,
             "execution_timeframe": execution_timeframe,
@@ -711,6 +750,7 @@ class ResearchService:
             "risk_percent": risk_percent,
             "maximum_notional_multiple": maximum_notional_multiple,
             "allow_short": allow_short,
+            "futures_inputs": futures.to_dict() if futures is not None else None,
         }
         normalized, data_quality = _prepare_research_frames(
             frames, minimum_bars=self.config.minimum_bars
@@ -818,6 +858,8 @@ def _compact_result(result: BacktestResult) -> dict[str, Any]:
         "gross_loss": -sum(trade.net_pnl for trade in result.trades_detail if trade.net_pnl < 0),
         "expectancy_r": result.expectancy_r,
         "average_r": result.average_r,
+        "funding_pnl": result.funding_pnl,
+        "simulation_metadata": result.simulation_metadata,
     }
 
 

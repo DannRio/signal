@@ -133,17 +133,25 @@ function scannerPayload() {
     equity: Number($("liveEquity").value), risk_percent: Number($("liveRisk").value),
     maximum_notional_multiple: Number($("liveLeverage").value), limit: 500,
     maximum_quote_age_seconds: Number($("scanQuoteAge").value), scan_timeout_seconds: Number($("scanTimeout").value),
+    track_paper: $("scanPaper").value === "on", paper_account: $("scanPaperAccount").value.trim() || "default",
   };
 }
 async function runScan() {
   clearError("scanError"); setLoading("scanLoading", true); $("scanResults").classList.add("hidden");
   $("scanButton").disabled = true;
+  $("scanLoading").textContent = "Checking markets and reusing validated candle history…";
+  const progressTimer = setInterval(async () => {
+    try {
+      const status = await api("/v1/scanner/status");
+      if (status.progress?.running) $("scanLoading").textContent = `${status.progress.completed_markets} / ${status.progress.requested_markets} markets checked${status.progress.current_symbol ? ` · ${status.progress.current_symbol}` : " · verifying quotes"}`;
+    } catch { /* The scan response remains the authoritative outcome. */ }
+  }, 1500);
   try {
     state.lastScanReport = await api("/v1/scan", { method: "POST", body: JSON.stringify(scannerPayload()) });
     renderScanReport(state.lastScanReport);
     $("scanResults").classList.remove("hidden");
   } catch (error) { showError("scanError", error); }
-  finally { setLoading("scanLoading", false); $("scanButton").disabled = false; }
+  finally { clearInterval(progressTimer); setLoading("scanLoading", false); $("scanButton").disabled = false; }
 }
 function scanItemIsCurrent(item, now = Date.now()) {
   return Boolean(item.actionable && item.valid_until && new Date(item.valid_until).getTime() > now);
@@ -153,6 +161,13 @@ function renderScanReport(report) {
   $("scanSummary").textContent = `${report.status.toUpperCase()} · ${currentCount} qualified now · ${report.analyzed_markets} analyzed · ${report.blocked_markets} blocked · ${report.failed_markets} failed · ${report.rejected_markets} rejected · ${number(report.duration_seconds, 1)}s`;
   $("scanAudit").textContent = `Snapshot ${new Date(report.started_at).toLocaleString()} · ${report.considered_markets} considered · ${report.excluded_by_limit} excluded by market limit · Run ${report.run_id || "not journaled"}`;
   $("scanMessages").innerHTML = (report.errors || []).map((error) => `<div class="message error"><strong>${escapeHtml(error.code)}</strong>: ${escapeHtml(error.message)}</div>`).join("") || (report.status === "empty" ? '<div class="message info">No markets passed the filters. Review the rejection reasons below.</div>' : "");
+  const counters = report.metrics?.counters || {};
+  $("scanMetrics").innerHTML = [
+    ["HTTP requests", number(counters.http_requests, 0)], ["Downloaded candles", number(counters.ohlcv_rows, 0)],
+    ["Reused candle windows", number(counters.cache_hits || 0, 0)], ["Reused analyses", number(counters.signal_cache_hits || 0, 0)],
+  ].map(([label, value]) => `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
+  $("scanTiming").innerHTML = Object.entries(report.metrics?.timings_seconds || {}).map(([label, value]) => `<div>${escapeHtml(label.replaceAll("_", " "))}</div><div>${number(value, 3)}s</div>`).join("");
+  if (report.paper) $("scanMessages").innerHTML += `<div class="message info">Paper observation recorded for ${escapeHtml(report.paper.summary?.account_id || "account")}. Open ${number(report.paper.summary?.open_positions, 0)}; unresolved ${number(report.paper.summary?.unresolved_positions, 0)}. See Paper outcomes.</div>` + (report.paper.errors || []).map((error) => `<div class="message error">${escapeHtml(error.message)}</div>`).join("");
   $("scanRows").innerHTML = report.items.map((item) => {
     const candidate = item.candidate;
     const signal = item.signal;
@@ -179,7 +194,7 @@ function renderScanReport(report) {
       <td>${escapeHtml(signal.regime.replaceAll("_", " "))}</td><td>${percent(signal.confidence, 1)}</td>
       <td>${percent(signal.consensus * 100, 0)}</td><td>${number(candidate.quote_volume, 0)}</td>
       <td>${number(candidate.spread_bps, 1)}</td><td>${plan ? number(plan.contracts, 8) : "—"}</td>
-      <td><details><summary>Diagnostics</summary><div class="scan-detail">${details.map((value) => `<p>${escapeHtml(value)}</p>`).join("")}</div></details></td></tr>`;
+      <td><details><summary>Diagnostics</summary><div class="scan-detail">${details.map((value) => `<p>${escapeHtml(value)}</p>`).join("")}${item.replay_id ? `<button type="button" data-replay="${escapeHtml(item.replay_id)}">Verify replay</button><button type="button" data-export-replay="${escapeHtml(item.replay_id)}">Export inputs</button>` : ""}</div></details></td></tr>`;
   }).join("") || '<tr><td colspan="10">No analyzed markets in this scan.</td></tr>';
   $("scanRejections").innerHTML = (report.rejections || []).map((item) => `<tr><td>${escapeHtml(item.symbol)}</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="3">No markets rejected.</td></tr>';
 }
@@ -208,7 +223,10 @@ async function runBacktest(fullValidation = false) {
   clearError("btError"); setLoading("btLoading", true); $("btResults").classList.add("hidden");
   try {
     const endpoint = fullValidation ? "/v1/research/validate" : "/v1/backtest/live";
-    const response = await api(endpoint, { method: "POST", body: JSON.stringify(backtestPayload()) });
+    const payload = backtestPayload();
+    const evidence = $("futuresEvidenceFile").files[0];
+    if (evidence) payload.futures_inputs = JSON.parse(await evidence.text());
+    const response = await api(endpoint, { method: "POST", body: JSON.stringify(payload) });
     $("btResults").classList.remove("hidden");
     if (fullValidation) renderValidationResponse(response); else renderBacktestResponse(response);
   } catch (error) { showError("btError", error); }
@@ -227,6 +245,8 @@ function renderValidationResponse(response) {
   renderGate(validation.gate, validation);
 }
 function renderBacktestCore(result, diagnostics) {
+  const simulation = result.simulation_metadata || diagnostics.simulation_metadata || {};
+  $("futuresSimulation").textContent = simulation.funding_modeled ? `Funding P&L: ${number(result.funding_pnl, 2)} USDT. Contract sizing uses supplied specifications; review the evidence assumptions. Margin and liquidation are not modeled.` : "Historical funding is not included in this result. Upload complete futures evidence to enable settlement and contract-lot accounting.";
   const pf = result.profit_factor == null ? (result.trades > 0 && result.net_pnl > 0 ? "∞" : "—") : number(result.profit_factor, 2);
   const metrics = [
     ["Total return", percent(result.total_return_percent, 2), result.total_return_percent >= 0],
@@ -261,8 +281,9 @@ function renderGate(gate, validation) {
 async function refreshJournal() {
   clearError("journalError");
   try {
-    const [signals, backtests, datasets] = await Promise.all([
-      api("/v1/journal/signals?limit=30"), api("/v1/journal/backtests?limit=20"), api("/v1/datasets?limit=50")
+    const [signals, backtests, datasets, snapshots, measured] = await Promise.all([
+      api("/v1/journal/signals?limit=30"), api("/v1/journal/backtests?limit=20"), api("/v1/datasets?limit=50"),
+      api("/v1/scanner/replays?limit=20"), api("/v1/scanner/metrics?limit=100")
     ]);
     $("journalMetrics").innerHTML = [
       ["Recent signals", signals.items.length], ["Recent backtests", backtests.items.length], ["Datasets", datasets.items.length]
@@ -273,7 +294,42 @@ async function refreshJournal() {
       const result = item.result.summary || item.result.base?.summary || item.result.result || {};
       return `<div class="journal-item"><strong>${escapeHtml(item.request.symbol || "Unknown")} · ${escapeHtml(item.request.execution_timeframe || "")}</strong><div class="journal-meta">${new Date(item.created_at).toLocaleString()} · return ${number(result.total_return_percent, 2)}% · trades ${number(result.trades, 0)}</div></div>`;
     }).join("") || '<p class="muted">No backtests recorded yet.</p>';
+    $("replayJournal").innerHTML = snapshots.items.map((item) => `<div class="journal-item"><strong>${escapeHtml(item.symbol)} · ${escapeHtml(item.action)}</strong><div class="journal-meta">${new Date(item.captured_at).toLocaleString()}</div><button type="button" data-replay="${escapeHtml(item.snapshot_id)}">Verify replay</button><button type="button" data-export-replay="${escapeHtml(item.snapshot_id)}">Export inputs</button><span class="replay-result muted"></span></div>`).join("") || '<p class="muted">Run a scan to capture complete input evidence.</p>';
+    $("workloadMetrics").innerHTML = measured.groups.map((group) => `<div class="journal-item"><strong>${number(group.workload.symbols.length, 0)} markets · ${escapeHtml(group.cache_state.replaceAll("_", " "))}</strong><div class="journal-meta">${number(group.runs, 0)} runs · median ${number(group.duration_seconds.p50, 3)}s · 95th percentile ${number(group.duration_seconds.p95, 3)}s · coverage ${number(group.coverage_percent, 1)}%</div></div>`).join("") || '<p class="muted">No scan measurements yet.</p>';
   } catch (error) { showError("journalError", error); }
+}
+
+async function refreshPaper() {
+  clearError("paperError");
+  const query = `account_id=${encodeURIComponent($("paperAccount").value.trim() || "default")}`;
+  try {
+    const [summary, positions, events] = await Promise.all([api(`/v1/paper/status?${query}`), api(`/v1/paper/positions?${query}`), api(`/v1/paper/events?${query}`)]);
+    $("paperStatus").textContent = summary.status === "not_started" ? "This paper account has not started. Enable paper tracking for a scan or run the monitor with --paper." : `Account ${summary.account_id} · assumed starting equity ${number(summary.assumed_equity, 2)} USDT · ${number(summary.overdue_observations, 0)} overdue observations. Funding coverage remains incomplete.`;
+    $("paperMetrics").innerHTML = [["Open positions", summary.open_positions || 0], ["Unresolved", summary.unresolved_positions || 0], ["Closed outcomes", summary.closed_positions || 0], ["P&L before funding", number(summary.closed_pnl_before_funding, 2)]].map(([label, value]) => `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
+    $("paperRows").innerHTML = positions.items.map((item) => `<tr><td>${escapeHtml(item.symbol)}</td><td>${escapeHtml(item.side)}</td><td>${escapeHtml(item.status)}</td><td>${price(item.entry_price)}</td><td>${price(item.exit_price)}</td><td>${number(item.contracts, 8)}</td><td>${number(item.pnl_before_funding, 2)}</td><td>${escapeHtml(item.exit_reason || item.unresolved_reason || "—")}</td></tr>`).join("") || '<tr><td colspan="8">No paper positions.</td></tr>';
+    $("paperEvents").innerHTML = events.items.map((item) => `<tr><td>${new Date(item.observed_at).toLocaleString()}</td><td>${escapeHtml(item.symbol)}</td><td>${escapeHtml(item.decision)}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="4">No admission events.</td></tr>';
+  } catch (error) { showError("paperError", error); }
+}
+
+async function replayAction(event) {
+  const button = event.target.closest("[data-replay], [data-export-replay]");
+  if (!button) return;
+  const id = button.dataset.replay || button.dataset.exportReplay;
+  button.disabled = true;
+  let output = button.parentElement.querySelector(".replay-result");
+  if (!output) { output = document.createElement("p"); output.className = "replay-result muted"; button.parentElement.appendChild(output); }
+  try {
+    if (button.dataset.exportReplay) {
+      const snapshot = await api(`/v1/scanner/replays/${encodeURIComponent(id)}`);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url; link.download = `signal-replay-${id.slice(0, 12)}.json`; link.click(); URL.revokeObjectURL(url);
+      output.textContent = "Complete input snapshot exported.";
+    } else {
+      const result = await api(`/v1/scanner/replays/${encodeURIComponent(id)}/verify`, { method: "POST" });
+      output.textContent = result.passed ? "Replay matched: decision and quote qualification." : `Replay differs: ${result.differences.join("; ")}`;
+    }
+  } catch (error) { output.textContent = error.message; }
+  finally { button.disabled = false; }
 }
 
 function sizeCanvas(canvas) {
@@ -349,6 +405,7 @@ function setupTabs() {
     button.classList.add("active"); $(`tab-${button.dataset.tab}`).classList.add("active");
     scheduleChartRedraw();
     if (button.dataset.tab === "journal") refreshJournal();
+    if (button.dataset.tab === "paper") refreshPaper();
   }));
 }
 function setDates() {
@@ -362,6 +419,8 @@ function bootstrap() {
   $("analyzeButton").addEventListener("click", analyzeMarket); $("scanButton").addEventListener("click", runScan);
   $("backtestButton").addEventListener("click", () => runBacktest(false)); $("validateButton").addEventListener("click", () => runBacktest(true));
   $("refreshJournalButton").addEventListener("click", refreshJournal);
+  $("refreshPaperButton").addEventListener("click", refreshPaper);
+  document.addEventListener("click", replayAction);
   $("scanMode").addEventListener("change", () => { $("scanSymbols").disabled = $("scanMode").value === "auto"; });
 }
 document.addEventListener("DOMContentLoaded", bootstrap);
