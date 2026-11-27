@@ -2,6 +2,8 @@ name: Public KuCoin data check
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["feature/scanner-observability"]
 
 permissions:
   contents: read
@@ -9,7 +11,7 @@ permissions:
 jobs:
   market-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,3 +22,12 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Verify public quotes and closed candles
         run: python scripts/check_public_scanner.py
+      - name: Verify public cache, restart and replay behavior
+        run: python scripts/check_scaling_public.py
+      - name: Preserve public-data observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-scaling-evidence
+          path: artifacts/public-scaling.json
+          if-no-files-found: ignore

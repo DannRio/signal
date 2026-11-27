@@ -10,10 +10,16 @@ from typing import Any
 
 import pandas as pd
 
+from .candle_cache import CandleCache
 from .config import RegimeBotConfig
 from .engine import RegimeSignalEngine
+from .futures_research import parse_futures_inputs
 from .history import HistoryRequest, HistoryService
 from .models import SignalAction, to_dict
+from .observability import summarize_scans
+from .paper import PaperPolicy, PaperTracker
+from .paper_monitor import observe_paper_scan
+from .replay import ReplayStore
 from .research import ResearchService
 from .scanner import MarketScanner, ScanInProgressError, ScanRequest
 from .service import LiveMarketRequest, RegimeBotService, parse_timeframes
@@ -62,15 +68,16 @@ def create_app(
     active_store = store or SignalStore(
         db_path or os.getenv("SIGNAL_DB_PATH", "data/signal_machine.db")
     )
-    active_service = service or RegimeBotService(engine)
+    active_service = service or RegimeBotService(engine, cache=CandleCache(active_store))
     active_history = history_service or HistoryService(store=active_store)
     active_scanner = scanner or MarketScanner(engine, store=active_store)
     research = ResearchService(active_config)
+    replays = ReplayStore(active_store)
     configured_api_key = os.getenv("SIGNAL_API_KEY", "").strip()
 
     app = FastAPI(
         title="KuCoin Futures Signal Machine",
-        version="2.1.1",
+        version="2.2.0",
         description=(
             "KuCoin USDT-perpetual, signal-only market-regime analysis, "
             "scanning, historical research, and validation platform. Confidence is a "
@@ -122,7 +129,7 @@ def create_app(
         return {
             "status": "ok",
             "engine": "signal_bot",
-            "version": "2.1.1",
+            "version": "2.2.0",
             "minimum_bars": engine.config.minimum_bars,
             "database": active_store.path,
             "api_key_required": bool(configured_api_key),
@@ -260,6 +267,21 @@ def create_app(
             contexts = _string_tuple(
                 payload.get("context_timeframes", ("1h", "4h"))
             )
+            tracker = None
+            if payload.get("track_paper") is True:
+                supplied_policy = payload.get("paper_policy", {})
+                if not isinstance(supplied_policy, dict):
+                    raise ValueError("paper_policy must be an object.")
+                policy_values = {"assumed_equity": float(payload.get("equity", 10_000.0)),
+                                 "fee_bps": active_config.risk.fee_bps, "slippage_bps": active_config.risk.slippage_bps,
+                                 "maximum_quote_age_seconds": float(payload.get("maximum_quote_age_seconds", 30.0)),
+                                 **supplied_policy}
+                policy = PaperPolicy(**policy_values)
+                if float(policy.assumed_equity) != float(payload.get("equity", 10_000.0)):
+                    raise ValueError("Paper assumed_equity must match the scan equity.")
+                if policy.observation_mode != "quotes":
+                    raise ValueError("Scanner paper tracking requires observation_mode='quotes'; closed-bar observations use the separate Python interface.")
+                tracker = PaperTracker(active_store, account_id=str(payload.get("paper_account", "default")), policy=policy)
             report = active_scanner.scan(
                 ScanRequest(
                     exchange_id=exchange_id,
@@ -287,6 +309,8 @@ def create_app(
                     maximum_quote_age_seconds=float(payload.get("maximum_quote_age_seconds", 30.0)),
                     maximum_staleness_bars=int(payload.get("maximum_staleness_bars", 1)),
                     scan_timeout_seconds=float(payload.get("scan_timeout_seconds", 180.0)),
+                    use_candle_cache=payload.get("use_candle_cache", True),
+                    capture_replay=payload.get("capture_replay", True),
                     limit=validate_kline_limit(
                         payload.get("limit", KUCOIN_MAX_KLINE_LIMIT)
                     ),
@@ -297,7 +321,10 @@ def create_app(
                     ),
                 )
             )
-            return report.to_dict()
+            response = report.to_dict()
+            if tracker is not None:
+                response["paper"] = observe_paper_scan(active_scanner, tracker, report)
+            return response
         except ScanInProgressError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -336,6 +363,7 @@ def create_app(
     @router.post("/backtest/live")
     def backtest_live(payload: dict[str, Any]) -> dict[str, Any]:
         try:
+            futures_inputs = parse_futures_inputs(payload.get("futures_inputs"))
             frames, datasets = _download_frames(active_history, payload)
             execution = str(payload.get("execution_timeframe", "15m")).lower()
             result = research.backtest(
@@ -348,6 +376,7 @@ def create_app(
                     payload.get("maximum_notional_multiple")
                 ),
                 allow_short=True,
+                futures_inputs=futures_inputs,
             )
             diagnostics = research.diagnostics(result)
             request_payload = {
@@ -376,6 +405,7 @@ def create_app(
     @router.post("/research/validate")
     def validate_strategy(payload: dict[str, Any]) -> dict[str, Any]:
         try:
+            futures_inputs = parse_futures_inputs(payload.get("futures_inputs"))
             frames, datasets = _download_frames(active_history, payload)
             execution = str(payload.get("execution_timeframe", "15m")).lower()
             validation = research.full_validation(
@@ -391,6 +421,7 @@ def create_app(
                     payload.get("monte_carlo_simulations", 2000)
                 ),
                 allow_short=True,
+                futures_inputs=futures_inputs,
             )
             request_payload = {
                 **payload,
@@ -414,15 +445,60 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @router.get("/paper/status")
+    def paper_status(account_id: str = "default") -> dict[str, Any]:
+        tracker = PaperTracker.open_existing(active_store, account_id=account_id)
+        return {"status": "not_started", "account_id": account_id, "order_execution": False} if tracker is None else {
+            "status": "observed", **tracker.summary(),
+        }
+
+    @router.get("/paper/positions")
+    def paper_positions(account_id: str = "default", limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        tracker = PaperTracker.open_existing(active_store, account_id=account_id)
+        return {"items": tracker.positions(limit=limit) if tracker else []}
+
+    @router.get("/paper/events")
+    def paper_events(account_id: str = "default", limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        tracker = PaperTracker.open_existing(active_store, account_id=account_id)
+        return {"items": tracker.events(limit=limit) if tracker else []}
+
+    @router.get("/scanner/metrics")
+    def scanner_metrics(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        return summarize_scans(active_store.recent_scans(limit=limit))
+
+    @router.get("/scanner/replays")
+    def replay_list(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+        return {"items": replays.recent(limit=limit), "retention_limit": replays.max_snapshots}
+
+    @router.get("/scanner/replays/{snapshot_id}")
+    def replay_inputs(snapshot_id: str) -> dict[str, Any]:
+        try:
+            return replays.get(snapshot_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/scanner/replays/{snapshot_id}/verify")
+    def verify_replay(snapshot_id: str) -> dict[str, Any]:
+        try:
+            return replays.replay(snapshot_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @router.get("/scanner/status")
     def scanner_status() -> dict[str, Any]:
         rows = active_store.recent_scans(limit=1)
+        progress = active_scanner.progress() if hasattr(active_scanner, "progress") else {"running": False}
         if not rows:
-            return {"status": "idle", "last_scan": None}
+            return {"status": "running" if progress["running"] else "idle", "last_scan": None, "progress": progress}
         latest = rows[0]
         result = latest["result"]
         return {
-            "status": result.get("status", "unknown"),
+            "status": "running" if progress["running"] else result.get("status", "unknown"),
+            "progress": progress,
             "last_scan": {
                 "run_id": latest["run_id"],
                 "generated_at": result.get("generated_at"),

@@ -1,4 +1,6 @@
-# Scanner engineering review and safeguards (v2.1)
+# Scanner engineering review and safeguards (v2.1 baseline)
+
+The findings below describe the v2.1 review. Version 2.2 adds persistent candle caching, replay archives, deadline propagation, forward paper observation and optional evidence-backed funding/contract accounting. See [SCALING_AND_PAPER.md](SCALING_AND_PAPER.md) for the current behavior and remaining limitations.
 
 Review baseline: `c05d22e327f7b2a8a79aa8b9297974a1f31cd96a`.
 Scope: signal-only KuCoin USDT perpetual scanning, monitoring, and the evidence gate used to assess scanner strategies. No strategy thresholds were optimized against trading results in this change.

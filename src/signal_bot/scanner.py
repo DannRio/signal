@@ -4,15 +4,19 @@ import json
 import math
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Protocol
 
+from .candle_cache import CandleCache
 from .engine import RegimeSignalEngine
 from .futures import ContractPlanError, ContractSpec, build_contract_plan
 from .models import MarketSignal, SignalAction, to_dict
+from .replay import ReplayStore, candidate_record, qualification_record
+from .runtime import RequestDeadline, RuntimeMetrics
 from .service import CCXTMarketDataClient, LiveMarketRequest, RegimeBotService
 from .storage import SignalStore
 from .validation import timeframe_to_timedelta
@@ -168,6 +172,19 @@ class CCXTUniverseProvider:
                 refreshed[candidate.symbol] = replace(candidate, bid=None, ask=None, spread_bps=None, quote_timestamp=None)
         return refreshed
 
+    def quote_snapshot(self, symbols: tuple[str, ...]) -> dict[str, MarketCandidate]:
+        """Observe existing paper exposure even when it leaves the scanned universe."""
+        tickers = self._fetch_quotes()
+        observed = _utc(self.now_factory())
+        result = {}
+        for symbol in symbols:
+            try:
+                if symbol in self._markets:
+                    result[symbol] = self._candidate(self._markets[symbol], tickers.get(symbol, {}), observed)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                continue
+        return result
+
     def _fetch_quotes(self) -> dict[str, dict]:
         if self.client is None:
             raise RuntimeError("Universe client has not been initialized.")
@@ -297,6 +314,8 @@ class ScanRequest:
     maximum_quote_age_seconds: float = 30.0
     maximum_staleness_bars: int = 1
     scan_timeout_seconds: float = 180.0
+    use_candle_cache: bool = True
+    capture_replay: bool = True
 
     def normalized(self) -> ScanRequest:
         exchange_id, market_type = enforce_venue(self.exchange_id, self.market_type)
@@ -312,6 +331,8 @@ class ScanRequest:
                                maximum_quote_age_seconds=self.maximum_quote_age_seconds)
 
     def validate(self) -> None:
+        if not isinstance(self.use_candle_cache, bool) or not isinstance(self.capture_replay, bool):
+            raise ValueError("use_candle_cache and capture_replay must be booleans.")
         self.universe_request().validate()
         if not self.symbols and not self.auto_universe:
             raise ValueError("Provide symbols or enable auto_universe.")
@@ -347,6 +368,8 @@ class ScanItem:
     valid_until: str | None = None
     contract_plan: dict[str, Any] | None = None
     data_quality: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    replay_id: str | None = None
 
     def is_actionable(self, now: datetime | None = None) -> bool:
         return bool(self.actionable and self.valid_until and _utc(now or datetime.now(UTC)) < datetime.fromisoformat(self.valid_until))
@@ -356,7 +379,8 @@ class ScanItem:
                 "signal": to_dict(self.signal) if self.signal is not None else None, "error": self.error,
                 "status": self.status, "error_code": self.error_code, "actionable": self.actionable,
                 "blocked_reasons": list(self.blocked_reasons), "valid_until": self.valid_until,
-                "contract_plan": self.contract_plan, "data_quality": self.data_quality}
+                "contract_plan": self.contract_plan, "data_quality": self.data_quality,
+                "metrics": self.metrics, "replay_id": self.replay_id}
 
 
 @dataclass(frozen=True)
@@ -381,6 +405,7 @@ class ScanReport:
     rejections: tuple[MarketRejection, ...] = ()
     errors: tuple[dict[str, str], ...] = ()
     provenance: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = {key: value for key, value in vars(self).items() if key not in {"items", "rejections"}}
@@ -401,7 +426,14 @@ class MarketScanner:
         self.now_factory = now_factory or (lambda: datetime.now(UTC))
         self.monotonic_factory = monotonic_factory or time.monotonic
         self._client: CCXTMarketDataClient | None = None
+        self._service: RegimeBotService | None = None
+        self._cache = CandleCache(store) if store is not None else None
+        self._replays = ReplayStore(store) if store is not None else None
         self._lock = threading.Lock()
+        self._progress: dict[str, Any] = {"running": False, "completed_markets": 0, "requested_markets": 0, "current_symbol": None}
+
+    def progress(self) -> dict[str, Any]:
+        return dict(self._progress)
 
     def scan(self, request: ScanRequest) -> ScanReport:
         request = request.normalized()
@@ -414,18 +446,61 @@ class MarketScanner:
         if not self._lock.acquire(blocking=False):
             raise ScanInProgressError("A scan is already running. Wait for it to finish before starting another.")
         try:
+            self._progress = {"running": True, "completed_markets": 0, "requested_markets": 0, "current_symbol": None}
             return self._scan(request)
+        finally:
+            self._progress = {**self._progress, "running": False, "current_symbol": None}
+            self._lock.release()
+
+    def paper_quotes(self, symbols: tuple[str, ...]) -> dict[str, MarketCandidate]:
+        if not self._lock.acquire(blocking=False):
+            raise ScanInProgressError("A scan is using the shared market-data connection.")
+        try:
+            provider = self.universe_provider
+            if provider is None or not hasattr(provider, "quote_snapshot"):
+                raise RuntimeError("This provider cannot refresh quotes for open paper positions.")
+            client = self._client or getattr(provider, "client", None)
+            context = client.operation_context(deadline=RequestDeadline.from_timeout(15)) if hasattr(client, "operation_context") else nullcontext()
+            with context:
+                return provider.quote_snapshot(symbols)
+        finally:
+            self._lock.release()
+
+    def discover_universe(self, request: ScanRequest) -> UniverseSnapshot:
+        """Resolve a fixed benchmark universe before collecting comparable runs."""
+        request = request.normalized()
+        request.validate()
+        if not self._lock.acquire(blocking=False):
+            raise ScanInProgressError("A scan is already using the market-data coordinator.")
+        try:
+            if self.universe_provider is None:
+                if self._client is None:
+                    self._client = CCXTMarketDataClient(request.exchange_id, request.market_type)
+                self.universe_provider = CCXTUniverseProvider(client=self._client, now_factory=self.now_factory)
+            provider = self.universe_provider
+            client = self._client or getattr(provider, "client", None)
+            context = client.operation_context(deadline=RequestDeadline.from_timeout(request.scan_timeout_seconds)) if hasattr(client, "operation_context") else nullcontext()
+            with context:
+                if hasattr(provider, "discover_report"):
+                    return provider.discover_report(request.universe_request())
+                candidates = tuple(provider.discover(request.universe_request()))
+                return UniverseSnapshot(candidates, considered_markets=len(candidates))
         finally:
             self._lock.release()
 
     def _scan(self, request: ScanRequest) -> ScanReport:
         started = _utc(self.now_factory())
         timer = self.monotonic_factory()
+        metrics = RuntimeMetrics()
+        deadline = RequestDeadline.from_timeout(request.scan_timeout_seconds)
         universe_request = request.universe_request()
         errors: list[dict[str, str]] = []
         snapshot = UniverseSnapshot(())
         items: list[ScanItem] = []
+        frame_bundles = {}
         provenance = self._provenance(request)
+        refresh_error = None
+        qualification_time = started
         try:
             if self.universe_provider is None or self.service_factory is None:
                 if self._client is None:
@@ -433,57 +508,104 @@ class MarketScanner:
             if self.universe_provider is None:
                 self.universe_provider = CCXTUniverseProvider(client=self._client, now_factory=self.now_factory)
             provider = self.universe_provider
-            if hasattr(provider, "discover_report"):
-                snapshot = provider.discover_report(universe_request)
-            else:
-                candidates = tuple(provider.discover(universe_request))
-                snapshot = UniverseSnapshot(candidates, considered_markets=len(candidates))
-            service = self.service_factory(self.engine) if self.service_factory else RegimeBotService(
-                self.engine, client_factory=lambda _exchange, _market: self._client
-            )
-            for candidate in snapshot.candidates:
-                if self.monotonic_factory() - timer >= request.scan_timeout_seconds:
-                    items.append(ScanItem(0, candidate, None, "Scan time budget exhausted before this market was analyzed.",
-                                          status="failed", error_code="scan_budget_exceeded"))
-                    continue
-                try:
-                    signal = service.analyze_live(
-                        LiveMarketRequest(exchange_id=request.exchange_id, market_type=request.market_type,
-                                          symbol=candidate.symbol, execution_timeframe=request.execution_timeframe,
-                                          context_timeframes=request.context_timeframes, limit=request.limit,
-                                          maximum_staleness_bars=request.maximum_staleness_bars),
-                        equity=request.equity, risk_percent=request.risk_percent,
-                        maximum_notional_multiple=request.maximum_notional_multiple, as_of=started,
+            client = self._client or getattr(provider, "client", None)
+            context = client.operation_context(deadline=deadline, metrics=metrics) if hasattr(client, "operation_context") else nullcontext()
+            with context:
+                with metrics.measure("universe_discovery"):
+                    deadline.check()
+                    if hasattr(provider, "discover_report"):
+                        snapshot = provider.discover_report(universe_request)
+                    else:
+                        candidates = tuple(provider.discover(universe_request))
+                        snapshot = UniverseSnapshot(candidates, considered_markets=len(candidates))
+                if self.service_factory:
+                    service = self.service_factory(self.engine)
+                else:
+                    if self._service is None:
+                        self._service = RegimeBotService(self.engine, client_factory=lambda _exchange, _market: self._client)
+                    service = self._service if request.use_candle_cache else RegimeBotService(
+                        self.engine, client_factory=lambda _exchange, _market: self._client, signal_cache_size=0,
                     )
-                    items.append(ScanItem(0, candidate, signal, None,
-                                          data_quality=dict(getattr(service, "last_frame_metadata", {}))))
-                except Exception as exc:  # isolate per-market failures; never convert them to NO_TRADE.
-                    items.append(ScanItem(0, candidate, None, str(exc), status="failed",
-                                          error_code=getattr(exc, "code", "analysis_failed")))
-            # A quote captured before a long OHLCV scan may already be stale. Refresh
-            # immediately before evaluating actionability, using the same limiter.
-            refresh_error = None
-            if items and hasattr(provider, "refresh_quotes"):
-                try:
-                    refreshed = provider.refresh_quotes([item.candidate for item in items])
-                    items = [replace(item, candidate=refreshed.get(item.candidate.symbol, item.candidate)) for item in items]
-                except Exception as exc:
-                    refresh_error = "Fresh quote verification failed: " + str(exc)
-                    errors.append({"code": "quote_refresh_failed", "message": refresh_error})
-            finished = _utc(self.now_factory())
-            qualified = []
-            for item in items:
-                try:
-                    qualified.append(self._qualify(item, request, finished, refresh_error))
-                except Exception as exc:
-                    qualified.append(replace(item, status="failed", actionable=False,
-                                             error=str(exc), error_code="qualification_failed"))
-            items = qualified
+                    service.cache = self._cache if request.use_candle_cache else None
+                for candidate in snapshot.candidates:
+                    self._progress = {"running": True, "completed_markets": len(items), "requested_markets": len(snapshot.candidates), "current_symbol": candidate.symbol}
+                    if self.monotonic_factory() - timer >= request.scan_timeout_seconds:
+                        items.append(ScanItem(0, candidate, None, "Scan time budget exhausted before this market was analyzed.",
+                                              status="failed", error_code="scan_budget_exceeded"))
+                        continue
+                    market_start = time.monotonic()
+                    try:
+                        deadline.check()
+                        live_request = LiveMarketRequest(exchange_id=request.exchange_id, market_type=request.market_type,
+                                                         symbol=candidate.symbol, execution_timeframe=request.execution_timeframe,
+                                                         context_timeframes=request.context_timeframes, limit=request.limit,
+                                                         maximum_staleness_bars=request.maximum_staleness_bars)
+                        kwargs = {"equity": request.equity, "risk_percent": request.risk_percent,
+                                  "maximum_notional_multiple": request.maximum_notional_multiple, "as_of": started}
+                        with metrics.measure("market_analysis"):
+                            if hasattr(service, "analyze_live_result"):
+                                analysis = service.analyze_live_result(live_request, deadline=deadline, metrics=metrics, **kwargs)
+                                signal, quality = analysis.signal, analysis.metadata
+                                frame_bundles[candidate.symbol] = analysis.frames
+                                market_metrics = {"cache": analysis.cache_stats, **analysis.metrics}
+                            else:
+                                # Compatibility for injected adapters; full replay is explicitly unavailable.
+                                signal = service.analyze_live(live_request, **kwargs)
+                                quality = dict(getattr(service, "last_frame_metadata", {}))
+                                market_metrics = {"replay_available": False}
+                        market_metrics["analysis_seconds"] = round(time.monotonic() - market_start, 6)
+                        items.append(ScanItem(0, candidate, signal, None, data_quality=quality, metrics=market_metrics))
+                    except Exception as exc:
+                        items.append(ScanItem(0, candidate, None, str(exc), status="failed",
+                                              error_code=getattr(exc, "code", "analysis_failed"),
+                                              metrics={"analysis_seconds": round(time.monotonic() - market_start, 6)}))
+                self._progress = {"running": True, "completed_markets": len(items), "requested_markets": len(snapshot.candidates), "current_symbol": None}
+                if items and hasattr(provider, "refresh_quotes"):
+                    try:
+                        with metrics.measure("quote_refresh"):
+                            deadline.check()
+                            refreshed = provider.refresh_quotes([item.candidate for item in items])
+                            items = [replace(item, candidate=refreshed.get(item.candidate.symbol, item.candidate)) for item in items]
+                    except Exception as exc:
+                        refresh_error = "Fresh quote verification failed: " + str(exc)
+                        errors.append({"code": getattr(exc, "code", "quote_refresh_failed"), "message": refresh_error})
+                finished = _utc(self.now_factory())
+                qualification_time = finished
+                qualified = []
+                with metrics.measure("qualification"):
+                    for item in items:
+                        try:
+                            value = self._qualify(item, request, finished, refresh_error)
+                            ages = dict(value.metrics)
+                            if value.signal:
+                                ages["decision_age_seconds"] = round((finished - _utc(value.signal.generated_at)).total_seconds(), 3)
+                            if value.candidate.quote_timestamp:
+                                ages["quote_age_seconds"] = round((finished - datetime.fromisoformat(value.candidate.quote_timestamp)).total_seconds(), 3)
+                            qualified.append(replace(value, metrics=ages))
+                        except Exception as exc:
+                            qualified.append(replace(item, status="failed", actionable=False,
+                                                     error=str(exc), error_code="qualification_failed"))
+                items = qualified
         except Exception as exc:
             errors.append({"code": getattr(exc, "code", "universe_unavailable"), "message": str(exc)})
         finished = _utc(self.now_factory())
         items.sort(key=_rank_key)
         items = [replace(item, rank=rank) for rank, item in enumerate(items, 1)]
+        if self._replays is not None and request.capture_replay:
+            with metrics.measure("snapshot_write"):
+                recorded = []
+                for item in items:
+                    frames = frame_bundles.get(item.candidate.symbol)
+                    if item.signal is not None and frames is not None:
+                        replay_id = self._replays.capture(frames=frames, request=asdict(request), as_of=started,
+                                                          engine_config=asdict(self.engine.config), candidate=candidate_record(item.candidate),
+                                                          signal=to_dict(item.signal), qualification=qualification_record(item),
+                                                          qualified_at=qualification_time, provenance=provenance, refresh_error=refresh_error)
+                        item = replace(item, replay_id=replay_id)
+                        metrics.increment("snapshots_written")
+                    recorded.append(item)
+                self._replays.prune()
+                items = recorded
         analyzed = sum(item.signal is not None for item in items)
         failed = sum(item.status == "failed" for item in items)
         blocked = sum(item.status == "blocked" for item in items)
@@ -492,24 +614,36 @@ class MarketScanner:
             status = "degraded" if analyzed else "failed"
         elif not items:
             status = "empty"
+        if self.store is not None:
+            with metrics.measure("signal_journal_write"):
+                for item in items:
+                    if item.signal is not None and item.status == "analyzed":
+                        self.store.record_signal(item.signal, exchange_id=request.exchange_id, market_type=request.market_type)
+        measurements = metrics.to_dict()
+        measurements["analysis_workers"] = 1
+        measurements["cache_enabled"] = request.use_candle_cache and self._cache is not None
+        measurements["snapshot_retention_limit"] = self._replays.max_snapshots if self._replays else 0
+        measurements["coverage_percent"] = round(100 * analyzed / len(items), 2) if items else None
         report = ScanReport(
             generated_at=finished.isoformat(), exchange_id=request.exchange_id, market_type=request.market_type,
             execution_timeframe=request.execution_timeframe, requested_markets=len(snapshot.candidates),
             analyzed_markets=analyzed, failed_markets=failed, items=tuple(items), status=status,
-            started_at=started.isoformat(), duration_seconds=round(self.monotonic_factory() - timer, 3),
+            started_at=started.isoformat(), duration_seconds=0.0,
             considered_markets=snapshot.considered_markets, rejected_markets=len(snapshot.rejections),
             excluded_by_limit=snapshot.excluded_by_limit, actionable_markets=sum(item.actionable for item in items),
             blocked_markets=blocked, rejections=snapshot.rejections, errors=tuple(errors), provenance=provenance,
+            metrics=measurements,
         )
         if self.store is not None:
-            # Persist analyzed signals once, after qualification. A database failure
-            # must be visible; silently losing the audit trail is not a successful run.
-            for item in items:
-                if item.signal is not None and item.status == "analyzed":
-                    self.store.record_signal(item.signal, exchange_id=request.exchange_id, market_type=request.market_type)
-            run_id = self.store.record_scan(exchange_id=request.exchange_id, market_type=request.market_type,
-                                            request=asdict(request), result=report.to_dict())
-            report = replace(report, run_id=run_id)
+            with metrics.measure("scan_journal_write"):
+                run_id = self.store.record_scan(exchange_id=request.exchange_id, market_type=request.market_type,
+                                                request=asdict(request), result=report.to_dict())
+            measurements.update(metrics.to_dict())
+            report = replace(report, run_id=run_id, metrics=measurements,
+                             duration_seconds=round(self.monotonic_factory() - timer, 3))
+            self.store.update_scan_result(run_id, report.to_dict())
+        else:
+            report = replace(report, duration_seconds=round(self.monotonic_factory() - timer, 3))
         return report
 
     @staticmethod

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "market-signal-bot"
-version = "2.1.1"
+version = "2.2.0"
 description = "KuCoin Futures signal scanner with market-data safeguards and research validation"
 readme = "README.md"
 requires-python = ">=3.11"

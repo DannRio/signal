@@ -176,6 +176,12 @@ class BacktestTrade:
     r_multiple: float
     exit_reason: str
     bars_held: int
+    funding_pnl: float | None = None
+    funding_payments: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    contract_size: float | None = None
+    entry_contracts: float | None = None
+    exit_fills: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    partial_exit_skips: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,8 @@ class BacktestResult:
     average_r: float
     trades_detail: tuple[BacktestTrade, ...]
     equity_curve: tuple[tuple[datetime, float], ...]
+    funding_pnl: float | None = None
+    simulation_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _serialize(value: Any) -> Any:
