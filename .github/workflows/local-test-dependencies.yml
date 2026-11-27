@@ -1,0 +1,19 @@
+name: Local test dependencies
+on:
+  push:
+    branches: ["tools/test-dependencies"]
+permissions:
+  contents: read
+jobs:
+  wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip download --dest wheels "pytest>=8,<10" "ruff>=0.8,<1" "ccxt>=4.4,<5"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: local-test-wheels
+          path: wheels
+          retention-days: 1
