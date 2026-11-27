@@ -31,9 +31,6 @@ body {
   border-bottom: 1px solid rgba(255,255,255,.08);
   background: rgba(7,16,31,.82);
   backdrop-filter: blur(14px);
-  position: sticky;
-  top: 0;
-  z-index: 20;
 }
 .eyebrow { color: var(--blue-2); font-weight: 800; letter-spacing: .13em; font-size: .72rem; }
 h1 { margin: 5px 0 2px; font-size: clamp(1.8rem, 4vw, 2.7rem); line-height: 1; }
@@ -49,7 +46,7 @@ h1 { margin: 5px 0 2px; font-size: clamp(1.8rem, 4vw, 2.7rem); line-height: 1; }
   background: rgba(7,16,31,.96);
   border-bottom: 1px solid var(--border);
   position: sticky;
-  top: 116px;
+  top: 0;
   z-index: 19;
 }
 .tab {
@@ -167,8 +164,7 @@ tr:hover td { background: rgba(255,255,255,.025); }
 .journal-meta { color: var(--muted); font-size: .74rem; }
 footer { color: var(--muted); text-align: center; padding: 25px 15px 45px; font-size: .78rem; }
 @media (max-width: 900px) {
-  .topbar { position: static; flex-direction: column; }
-  .tabs { top: 0; }
+  .topbar { flex-direction: column; }
   .two-column { grid-template-columns: 1fr; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .button-group { width: 100%; }

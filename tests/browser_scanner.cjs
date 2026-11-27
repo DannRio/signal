@@ -3,6 +3,30 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 const fs=require('node:fs/promises');
 
+async function fullPageScreenshot(page,filePath) {
+ // Full-page captures should show sticky navigation at its document origin,
+ // not composited over the currently scrolled section of the screenshot.
+ await page.evaluate(()=>window.scrollTo(0,0));
+ await page.waitForFunction(()=>window.scrollY===0);
+ await page.screenshot({path:filePath,fullPage:true});
+}
+
+async function assertScrolledNavigation(page) {
+ await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+ await page.waitForFunction(()=>window.scrollY>100);
+ const position=await page.locator('[data-tab="scanner"]').evaluate(button=>{
+  const rect=button.getBoundingClientRect(),x=rect.left+rect.width/2,y=rect.top+rect.height/2;
+  const hit=document.elementFromPoint(x,y);
+  return {top:rect.top,bottom:rect.bottom,viewportHeight:innerHeight,hitTab:hit?.closest('[data-tab]')?.dataset.tab,scrollY};
+ });
+ assert.ok(position.top>=0&&position.bottom<=position.viewportHeight,JSON.stringify(position));
+ assert.equal(position.hitTab,'scanner',`Sticky navigation must not sit underneath the header: ${JSON.stringify(position)}`);
+ await page.click('[data-tab="live"]');
+ assert.equal(await page.locator('#tab-live').evaluate(el=>el.classList.contains('active')),true);
+ await page.click('[data-tab="scanner"]');
+ assert.equal(await page.locator('#tab-scanner').evaluate(el=>el.classList.contains('active')),true);
+}
+
 function chartFixtures() {
  const start=Date.UTC(2026,10,20);
  const candles=Array.from({length:240},(_,i)=>{
@@ -169,11 +193,11 @@ async function checkPaperAndResearchFlow(browser,artifactDir) {
  assert.ok((await unresolved.textContent()).includes(untrusted));
  assert.equal(await page.locator('#paperRows img,#paperEvents img,#paperStatus img').count(),0);
  assert.match(await page.locator('#paperEvents').textContent(),/expired/);
- await page.screenshot({path:path.join(artifactDir,'paper-desktop.png'),fullPage:true});
+ await fullPageScreenshot(page,path.join(artifactDir,'paper-desktop.png'));
  await page.setViewportSize({width:390,height:844});
  const mobile=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));
  assert.ok(mobile.scroll<=mobile.width+1,JSON.stringify(mobile));
- await page.screenshot({path:path.join(artifactDir,'paper-mobile.png'),fullPage:true});
+ await fullPageScreenshot(page,path.join(artifactDir,'paper-mobile.png'));
  await page.locator('#paperAccount').fill('unstarted');
  await page.click('#refreshPaperButton');
  await page.waitForFunction(()=>document.getElementById('paperStatus').textContent.includes('has not started'));
@@ -191,7 +215,7 @@ async function checkPaperAndResearchFlow(browser,artifactDir) {
  assert.equal(await page.locator('#replayJournal img').count(),0);
  await page.locator('#replayJournal [data-replay]').click();
  await page.waitForFunction(()=>document.querySelector('#replayJournal .replay-result').textContent.includes('Replay matched'));
- await page.screenshot({path:path.join(artifactDir,'journal-replay-metrics.png'),fullPage:true});
+ await fullPageScreenshot(page,path.join(artifactDir,'journal-replay-metrics.png'));
  await page.click('[data-tab="backtest"]');
  await page.locator('#futuresEvidenceFile').setInputFiles({name:'futures-evidence.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(evidence))});
  await page.click('#backtestButton');
@@ -203,7 +227,7 @@ async function checkPaperAndResearchFlow(browser,artifactDir) {
  assert.match(await page.locator('#validationGate').textContent(),/Missing/);
  assert.match(await page.locator('#futuresSimulation').textContent(),/Funding P&L:/);
  await assertChart(page,'equityChart',330,'equity');
- await page.screenshot({path:path.join(artifactDir,'futures-evidence-validation.png'),fullPage:true});
+ await fullPageScreenshot(page,path.join(artifactDir,'futures-evidence-validation.png'));
  await page.locator('#futuresEvidenceFile').setInputFiles([]);
  await page.click('#backtestButton');
  await page.waitForFunction(()=>document.getElementById('futuresSimulation').textContent.includes('Historical funding is not included'));
@@ -271,7 +295,8 @@ async function checkPaperAndResearchFlow(browser,artifactDir) {
  assert.ok((await page.locator('#scanRows .replay-result').first().textContent()).includes('<img src=x'));
  const desktopTable=await page.locator('#scanResults .table-wrap').first().evaluate(el=>({width:el.clientWidth,scroll:el.scrollWidth}));
  assert.ok(desktopTable.scroll<=desktopTable.width+1,JSON.stringify(desktopTable));
- await page.screenshot({path:path.join(artifactDir,'scanner-desktop.png'),fullPage:true});
+ await assertScrolledNavigation(page);
+ await fullPageScreenshot(page,path.join(artifactDir,'scanner-desktop.png'));
  await page.locator('#scanPaper').selectOption('on');
  await page.locator('#scanPaperAccount').fill('browser <paper>');
  await page.click('#scanButton');
@@ -284,13 +309,13 @@ async function checkPaperAndResearchFlow(browser,artifactDir) {
  assert.match(await page.locator('#scanSummary').textContent(),/0 qualified now/);
  assert.equal(await page.locator('#scanButton').isDisabled(),false);
  await page.setViewportSize({width:390,height:844});
- await page.screenshot({path:path.join(artifactDir,'scanner-mobile.png'),fullPage:true});
+ await fullPageScreenshot(page,path.join(artifactDir,'scanner-mobile.png'));
  const size=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));
  assert.ok(size.scroll<=size.width+1,JSON.stringify(size));
  assert.deepEqual(errors,[]);
  const charts=[];
  for(const ratio of [1,1.25,2]) charts.push(await checkChartFlow(browser,artifactDir,ratio));
  const evidence=await checkPaperAndResearchFlow(browser,artifactDir);
- console.log(JSON.stringify({desktop:'passed',mobile:'passed',expiry:'passed',escaping:'passed',scanMetrics:'passed',replayVerifyAndExport:'passed',paperOptIn:'passed',pageErrors:errors,charts,evidence}));
+ console.log(JSON.stringify({desktop:'passed',mobile:'passed',scrolledNavigation:'passed',expiry:'passed',escaping:'passed',scanMetrics:'passed',replayVerifyAndExport:'passed',paperOptIn:'passed',pageErrors:errors,charts,evidence}));
  await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});
