@@ -23,11 +23,55 @@ from signal_bot.storage import SignalStore
 @pytest.fixture(autouse=True)
 def offline_operations(monkeypatch):
     monkeypatch.delenv("SIGNAL_API_KEY", raising=False)
+    original_connect = socket.socket.connect
 
-    def unexpected_network(*args, **kwargs):
-        pytest.fail("An offline operations test attempted a network connection.")
+    def offline_connect(connection, address):
+        # Windows asyncio emulates socketpair with a loopback TCP connection.
+        # Permit only its exact loopback literals, never venue hosts or a
+        # broader private-network range.
+        host = address[0] if isinstance(address, tuple) and address else None
+        if (connection.family == socket.AF_INET and host == "127.0.0.1") or (
+            connection.family == socket.AF_INET6 and host == "::1"
+        ):
+            return original_connect(connection, address)
+        pytest.fail(
+            "An offline operations test attempted an external network connection."
+        )
 
-    monkeypatch.setattr(socket.socket, "connect", unexpected_network)
+    monkeypatch.setattr(socket.socket, "connect", offline_connect)
+
+
+@pytest.mark.parametrize(
+    ("family", "host"),
+    [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")],
+)
+def test_offline_guard_allows_event_loop_loopback_connections(family, host):
+    listener = None
+    try:
+        listener = socket.socket(family, socket.SOCK_STREAM)
+        listener.bind((host, 0))
+    except OSError:
+        if listener is not None:
+            listener.close()
+        if family == socket.AF_INET6:
+            pytest.skip("IPv6 loopback is unavailable on this host.")
+        raise
+    with listener:
+        listener.settimeout(1.0)
+        listener.listen(1)
+        with socket.socket(family, socket.SOCK_STREAM) as client:
+            client.settimeout(1.0)
+            client.connect(listener.getsockname())
+            accepted, address = listener.accept()
+            with accepted:
+                assert address[0] == host
+
+
+@pytest.mark.parametrize("host", ["198.51.100.10", "api-futures.kucoin.com"])
+def test_offline_guard_still_blocks_external_and_venue_connections(host):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        with pytest.raises(pytest.fail.Exception, match="external network connection"):
+            connection.connect((host, 443))
 
 
 class RecordingScanner:

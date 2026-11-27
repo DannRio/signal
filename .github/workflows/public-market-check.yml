@@ -24,10 +24,14 @@ jobs:
         run: python scripts/check_public_scanner.py
       - name: Verify public cache, restart and replay behavior
         run: python scripts/check_scaling_public.py
+      - name: Measure a fixed twenty-market workload
+        run: python -m signal_bot.launcher --db artifacts/capacity.db benchmark --auto-universe --max-markets 20 --repetitions 2 > artifacts/public-capacity.json
       - name: Preserve public-data observations
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: public-scaling-evidence
-          path: artifacts/public-scaling.json
+          path: |
+            artifacts/public-scaling.json
+            artifacts/public-capacity.json
           if-no-files-found: ignore
